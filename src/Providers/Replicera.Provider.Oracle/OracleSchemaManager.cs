@@ -1,5 +1,6 @@
 using Oracle.ManagedDataAccess.Client;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
@@ -33,11 +34,6 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var name = reader.GetString(0);
-            if (name.EndsWith("_TYPE", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
             var sqlType = reader.GetString(1);
             var matched = sourceByName.GetValueOrDefault(name);
             var type = matched is not null && IsCompatibleSqlType(matched.SourceType, sqlType)
@@ -70,12 +66,24 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
 
         await using var connection = new OracleConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureNoExternalDependenciesAsync(connection, source, plan, cancellationToken).ConfigureAwait(false);
+        if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
+                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+        {
+            await ResetCheckpointBeforeDdlAsync(connection, jobName, source.LogicalName, cancellationToken).ConfigureAwait(false);
+        }
+
         foreach (var change in plan.Changes.Where(change => change.IsAutomatic))
         {
             var statements = change.Kind switch
             {
                 SchemaChangeKind.CreateTable => [OracleDdlBuilder.BuildCreateTable(source)],
+                SchemaChangeKind.RecreateTable => BuildRecreateTable(source),
                 SchemaChangeKind.AddColumn => BuildAddColumn(source, change.ObjectName),
+                SchemaChangeKind.AddLookupTypeColumn => [BuildAddLookupTypeColumn(source, change.ObjectName)],
+                SchemaChangeKind.AddManagedColumn => [BuildAddManagedColumn(source, change.ObjectName)],
+                SchemaChangeKind.RenameColumn => [BuildRenameColumn(source, change.ObjectName, change.NewObjectName!)],
+                SchemaChangeKind.DropColumn => [BuildDropColumn(source, change.ObjectName)],
                 SchemaChangeKind.ExpandColumn => [BuildAlterColumn(source, change.ObjectName)],
                 _ => []
             };
@@ -88,12 +96,159 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await using var transaction = connection.BeginTransaction();
         var schema = await GetCurrentSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         var tableId = await EnsureOwnershipAsync(connection, transaction, schema, jobName, source, cancellationToken).ConfigureAwait(false);
+        if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
+                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+        {
+            await using var reset = connection.CreateCommand();
+            reset.Transaction = transaction;
+            reset.BindByName = true;
+            reset.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'ResyncRequired' WHERE TABLE_ID = :table_id";
+            reset.Parameters.Add("table_id", OracleDbType.Raw, 16).Value = OracleValueConverter.ToBytes(tableId);
+            _ = await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         foreach (var change in plan.Changes)
         {
             await RecordSchemaChangeAsync(connection, transaction, tableId, change, cancellationToken).ConfigureAwait(false);
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ResetCheckpointBeforeDdlAsync(
+        OracleConnection connection,
+        string jobName,
+        string logicalName,
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.BindByName = true;
+        command.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'ResyncRequired' WHERE REPLICATION_JOB_ID = :job_name AND DATAVERSE_LOGICAL_NAME = :logical_name";
+        command.Parameters.Add("job_name", OracleDbType.NVarchar2).Value = jobName;
+        command.Parameters.Add("logical_name", OracleDbType.NVarchar2).Value = logicalName;
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> ReconcileMissingTableAsync(
+        string jobName,
+        string logicalName,
+        SynchronizationMode mode,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        Guid tableId;
+        string destinationName;
+        await using (var lookup = connection.CreateCommand())
+        {
+            lookup.BindByName = true;
+            lookup.CommandText = "SELECT TABLE_ID, DESTINATION_TABLE_NAME FROM REPLICERA_TABLES WHERE REPLICATION_JOB_ID = :job AND DATAVERSE_LOGICAL_NAME = :logical";
+            lookup.Parameters.Add("job", OracleDbType.NVarchar2).Value = jobName;
+            lookup.Parameters.Add("logical", OracleDbType.NVarchar2).Value = logicalName;
+            await using var reader = await lookup.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            tableId = OracleValueConverter.ToGuid((byte[])reader.GetValue(0));
+            destinationName = reader.GetString(1);
+        }
+
+        var drop = mode is SynchronizationMode.Complete or SynchronizationMode.Reload;
+        if (drop)
+        {
+            await EnsureNoExternalDependenciesAsync(connection, destinationName, null, cancellationToken).ConfigureAwait(false);
+            await using var exists = connection.CreateCommand();
+            exists.BindByName = true;
+            exists.CommandText = "SELECT COUNT(*) FROM USER_TABLES WHERE TABLE_NAME = :table_name";
+            exists.Parameters.Add("table_name", OracleDbType.Varchar2).Value = destinationName;
+            if (Convert.ToInt32(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) > 0)
+            {
+                await ExecuteAsync(connection, null, $"DROP TABLE {OracleIdentifier.Quote(destinationName)}", cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await using var transaction = connection.BeginTransaction();
+        await using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.BindByName = true;
+            update.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'SourceRemoved' WHERE TABLE_ID = :table_id";
+            update.Parameters.Add("table_id", OracleDbType.Raw, 16).Value = OracleValueConverter.ToBytes(tableId);
+            _ = await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await RecordSchemaChangeAsync(connection, transaction, tableId, new SchemaChange(
+            SchemaChangeKind.DropTable,
+            destinationName,
+            $"Source table '{logicalName}' no longer exists; {(drop ? "drop" : "retain")} its destination table.",
+            drop,
+            false), cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return drop;
+    }
+
+    private static async Task EnsureNoExternalDependenciesAsync(
+        OracleConnection connection,
+        TableDefinition source,
+        SchemaPlan plan,
+        CancellationToken cancellationToken)
+    {
+        if (plan.Changes.Any(change => change.IsAutomatic && change.Kind == SchemaChangeKind.RecreateTable))
+        {
+            await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, null, cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var change in plan.Changes.Where(change => change.IsAutomatic && change.Kind == SchemaChangeKind.DropColumn))
+        {
+            await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, change.ObjectName, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task EnsureNoExternalDependenciesAsync(
+        OracleConnection connection,
+        string tableName,
+        string? columnName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.BindByName = true;
+        command.CommandText = columnName is null
+            ? """
+                SELECT 'foreign key ' || CONSTRAINT_NAME FROM USER_CONSTRAINTS WHERE CONSTRAINT_TYPE = 'R' AND (TABLE_NAME = :table_name OR R_CONSTRAINT_NAME IN (SELECT CONSTRAINT_NAME FROM USER_CONSTRAINTS WHERE TABLE_NAME = :table_name))
+                UNION ALL SELECT 'trigger ' || TRIGGER_NAME FROM USER_TRIGGERS WHERE TABLE_NAME = :table_name
+                UNION ALL SELECT 'index ' || i.INDEX_NAME FROM USER_INDEXES i WHERE i.TABLE_NAME = :table_name AND NOT EXISTS (SELECT 1 FROM USER_CONSTRAINTS c WHERE c.INDEX_NAME = i.INDEX_NAME AND c.CONSTRAINT_TYPE IN ('P', 'U'))
+                UNION ALL SELECT 'dependent object ' || NAME FROM USER_DEPENDENCIES WHERE REFERENCED_NAME = :table_name AND NAME <> :table_name
+                UNION ALL SELECT 'permission for ' || GRANTEE FROM USER_TAB_PRIVS_MADE WHERE TABLE_NAME = :table_name
+                """
+            : """
+                SELECT 'constraint ' || c.CONSTRAINT_NAME FROM USER_CONS_COLUMNS c WHERE c.TABLE_NAME = :table_name AND c.COLUMN_NAME = :column_name
+                UNION ALL SELECT 'index ' || i.INDEX_NAME FROM USER_IND_COLUMNS i WHERE i.TABLE_NAME = :table_name AND i.COLUMN_NAME = :column_name
+                UNION ALL SELECT 'dependent object ' || d.NAME FROM USER_DEPENDENCIES d WHERE d.REFERENCED_NAME = :table_name AND d.NAME <> :table_name
+                """;
+        command.Parameters.Add("table_name", OracleDbType.Varchar2).Value = OracleIdentifier.Normalize(tableName);
+        if (columnName is not null)
+        {
+            command.Parameters.Add("column_name", OracleDbType.Varchar2).Value = OracleIdentifier.Normalize(columnName);
+        }
+
+        var dependencies = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            dependencies.Add(reader.GetString(0));
+        }
+
+        if (dependencies.Count > 0)
+        {
+            throw new RepliceraException(
+                ErrorCategory.SchemaConflict,
+                $"Cannot drop {(columnName is null ? $"table '{tableName}'" : $"column '{tableName}.{columnName}'")} because it has external dependencies: {string.Join(", ", dependencies.Distinct(StringComparer.OrdinalIgnoreCase))}.");
+        }
     }
 
     private static async Task<bool> IsManagedAsync(
@@ -217,18 +372,39 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
     {
         var column = table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
         var tableName = OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName));
-        var nullable = column.IsNullable ? "NULL" : "NOT NULL";
         var statements = new List<string>
         {
-            $"ALTER TABLE {tableName} ADD ({OracleIdentifier.Quote(OracleIdentifier.Normalize(column.LogicalName))} {OracleTypeMapper.Map(column).Declaration} {nullable})"
+            $"ALTER TABLE {tableName} ADD ({OracleIdentifier.Quote(OracleIdentifier.Normalize(column.LogicalName))} {OracleTypeMapper.Map(column).Declaration} NULL)"
         };
         if (column.SourceType == SourceType.Lookup && column.LookupTargets.Count > 1)
         {
-            statements.Add($"ALTER TABLE {tableName} ADD ({OracleIdentifier.Quote(OracleIdentifier.Normalize($"{column.LogicalName}_type"))} NVARCHAR2(128) {nullable})");
+            statements.Add($"ALTER TABLE {tableName} ADD ({OracleIdentifier.Quote(OracleIdentifier.Normalize($"{column.LogicalName}_type"))} NVARCHAR2(128) NULL)");
         }
 
         return statements;
     }
+
+    private static string BuildAddManagedColumn(TableDefinition table, string columnName) =>
+        $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} ADD ({OracleIdentifier.Quote(OracleIdentifier.Normalize(columnName))} TIMESTAMP(7) WITH TIME ZONE NULL)";
+
+    private static string BuildAddLookupTypeColumn(TableDefinition table, string logicalName) =>
+        $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} ADD ({OracleIdentifier.Quote(OracleIdentifier.Normalize($"{logicalName}_type"))} NVARCHAR2(128) NULL)";
+
+    private static List<string> BuildRecreateTable(TableDefinition table) =>
+    [
+        $"DROP TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}",
+        OracleDdlBuilder.BuildCreateTable(table)
+    ];
+
+    private static string BuildDropColumn(TableDefinition table, string destinationName)
+    {
+        var tableName = OracleIdentifier.Normalize(table.DestinationName);
+        var columnName = OracleIdentifier.Normalize(destinationName);
+        return $"ALTER TABLE {OracleIdentifier.Quote(tableName)} DROP COLUMN {OracleIdentifier.Quote(columnName)}";
+    }
+
+    private static string BuildRenameColumn(TableDefinition table, string oldName, string newName) =>
+        $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} RENAME COLUMN {OracleIdentifier.Quote(OracleIdentifier.Normalize(oldName))} TO {OracleIdentifier.Quote(OracleIdentifier.Normalize(newName))}";
 
     private static string BuildAlterColumn(TableDefinition table, string logicalName)
     {

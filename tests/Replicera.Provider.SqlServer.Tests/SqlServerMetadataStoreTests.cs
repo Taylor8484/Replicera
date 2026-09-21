@@ -13,4 +13,11 @@ public sealed class SqlServerMetadataStoreTests
         Assert.Contains("[ChangeCheckpoint] nvarchar(max)", sql, StringComparison.Ordinal);
         Assert.Contains("UQ_replicera_Tables_Job_Table", sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void MigrationTwo_PersistsLastSynchronizationMode()
+    {
+        Assert.Contains("[LastSyncMode]", SqlServerMetadataStore.MigrationTwo, StringComparison.Ordinal);
+        Assert.Equal(2, SqlServerMetadataStore.CurrentSchemaVersion);
+    }
 }

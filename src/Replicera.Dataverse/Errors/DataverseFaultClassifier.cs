@@ -10,6 +10,14 @@ internal static class DataverseFaultClassifier
 {
     internal const int InvalidArgumentErrorCode = unchecked((int)0x80040203);
 
+    private static readonly HashSet<int> MissingEntityErrorCodes =
+    [
+        unchecked((int)0x8004F899), // EntityNotExist
+        unchecked((int)0x80094005), // EntityNotFound
+        unchecked((int)0x8005E00C), // InvalidEntity
+        unchecked((int)0x80072493)  // InvalidEntityLogicalName
+    ];
+
     private static readonly HashSet<int> ServiceProtectionErrorCodes =
     [
         -2147015902,
@@ -28,6 +36,13 @@ internal static class DataverseFaultClassifier
             return new RepliceraException(
                 ErrorCategory.ExpiredCheckpoint,
                 "The Dataverse change checkpoint is expired or invalid; a full resynchronization is required.");
+        }
+
+        if (request is RetrieveEntityRequest && MissingEntityErrorCodes.Contains(fault.ErrorCode))
+        {
+            return new RepliceraException(
+                ErrorCategory.SourceMetadataNotFound,
+                "Dataverse confirmed that the requested table does not exist in published metadata.");
         }
 
         if (ServiceProtectionErrorCodes.Contains(fault.ErrorCode) || TryGetHttpStatus(fault) == 429)

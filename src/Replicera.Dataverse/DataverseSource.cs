@@ -2,6 +2,7 @@ using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Dataverse.Metadata;
 
@@ -47,5 +48,20 @@ public sealed class DataverseSource(IDataverseService service) : ISourceConnecti
             cancellationToken).ConfigureAwait(false);
 
         return DataverseMetadataTranslator.Translate(response.EntityMetadata, logicalName);
+    }
+
+    public async Task<SourceTablePresence> ConfirmTablePresenceAsync(
+        string logicalName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await GetTableAsync(logicalName, cancellationToken).ConfigureAwait(false);
+            return SourceTablePresence.Present;
+        }
+        catch (RepliceraException exception) when (exception.Category == ErrorCategory.SourceMetadataNotFound)
+        {
+            return SourceTablePresence.Missing;
+        }
     }
 }

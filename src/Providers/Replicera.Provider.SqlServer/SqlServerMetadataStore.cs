@@ -4,7 +4,7 @@ namespace Replicera.Provider.SqlServer;
 
 public sealed class SqlServerMetadataStore(string connectionString)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public async Task EnsureCreatedAsync(CancellationToken cancellationToken)
     {
@@ -13,7 +13,7 @@ public sealed class SqlServerMetadataStore(string connectionString)
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqlTransaction)transaction;
-        command.CommandText = MigrationOne;
+        command.CommandText = $"{MigrationOne}{Environment.NewLine}{MigrationTwo}";
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -87,5 +87,13 @@ public sealed class SqlServerMetadataStore(string connectionString)
 
             INSERT INTO [replicera].[SchemaVersions] ([Version], [AppliedUtc]) VALUES (1, SYSUTCDATETIME());
         END;
+        """;
+
+    internal const string MigrationTwo = """
+        IF COL_LENGTH(N'replicera.Tables', N'LastSyncMode') IS NULL
+            ALTER TABLE [replicera].[Tables] ADD [LastSyncMode] nvarchar(32) NULL;
+
+        IF NOT EXISTS (SELECT 1 FROM [replicera].[SchemaVersions] WHERE [Version] = 2)
+            INSERT INTO [replicera].[SchemaVersions] ([Version], [AppliedUtc]) VALUES (2, SYSUTCDATETIME());
         """;
 }

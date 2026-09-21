@@ -5,6 +5,7 @@ public enum ErrorCategory
     Configuration,
     Authentication,
     Authorization,
+    SourceMetadataNotFound,
     SourceConnectivity,
     DestinationConnectivity,
     Throttling,
@@ -45,7 +46,7 @@ public static class ExitCodeMapper
     {
         ErrorCategory.Configuration => ExitCode.InvalidInput,
         ErrorCategory.Authentication or ErrorCategory.Authorization => ExitCode.AuthenticationOrAuthorization,
-        ErrorCategory.SourceConnectivity or ErrorCategory.Throttling => ExitCode.SourceConnectivity,
+        ErrorCategory.SourceConnectivity or ErrorCategory.SourceMetadataNotFound or ErrorCategory.Throttling => ExitCode.SourceConnectivity,
         ErrorCategory.DestinationConnectivity => ExitCode.DestinationConnectivity,
         ErrorCategory.UnsupportedMetadata or ErrorCategory.SchemaConflict => ExitCode.SchemaOrMetadata,
         ErrorCategory.ExpiredCheckpoint => ExitCode.ResynchronizationRequired,

@@ -30,7 +30,8 @@ public enum TableState
     Failed,
     Blocked,
     ResyncRequired,
-    SchemaConflict
+    SchemaConflict,
+    SourceRemoved
 }
 
 public sealed record SyncMetrics(

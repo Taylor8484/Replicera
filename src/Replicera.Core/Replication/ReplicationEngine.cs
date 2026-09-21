@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Errors;
 using Replicera.Core.Models;
 
@@ -30,7 +31,11 @@ public sealed partial class ReplicationEngine
         TableDefinition table,
         int pageSize,
         CancellationToken cancellationToken,
-        bool forceInitial = false)
+        bool forceInitial = false,
+        bool preserveExisting = false,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(table);
@@ -40,14 +45,19 @@ public sealed partial class ReplicationEngine
             table.LogicalName,
             cancellationToken).ConfigureAwait(false);
 
-        var currentCheckpoint = forceInitial ? null : state?.DataCheckpoint;
+        var modeRequiresFullSync = string.Equals(
+            state?.LastSyncMode,
+            SynchronizationMode.NoDataLoss.ToString(),
+            StringComparison.OrdinalIgnoreCase)
+            && mode == SynchronizationMode.Complete;
+        var currentCheckpoint = forceInitial || modeRequiresFullSync ? null : state?.DataCheckpoint;
         var syncType = currentCheckpoint is null ? "initial" : "incremental";
         LogReplicationStarted(logger, jobName, table.LogicalName, syncType);
         try
         {
             await using var session = currentCheckpoint is null
-                ? await destination.BeginInitialSyncAsync(jobName, table, cancellationToken).ConfigureAwait(false)
-                : await destination.BeginIncrementalSyncAsync(jobName, table, currentCheckpoint, cancellationToken).ConfigureAwait(false);
+                ? await destination.BeginInitialSyncAsync(jobName, table, cancellationToken, !preserveExisting, retainDeletedRows, mode, externalLockHeld).ConfigureAwait(false)
+                : await destination.BeginIncrementalSyncAsync(jobName, table, currentCheckpoint, cancellationToken, retainDeletedRows, mode, externalLockHeld).ConfigureAwait(false);
 
             long pages = 0;
             long received = 0;

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Models;
 using Replicera.Core.Replication;
 using Xunit.Abstractions;
@@ -99,13 +100,20 @@ public sealed class ScaleIntegrationTests(ITestOutputHelper output)
         public Task<IReplicationSession> BeginInitialSyncAsync(
             string jobName,
             TableDefinition table,
-            CancellationToken cancellationToken) => Task.FromResult<IReplicationSession>(session);
+            CancellationToken cancellationToken,
+            bool replaceExisting = true,
+            bool retainDeletedRows = false,
+            SynchronizationMode mode = SynchronizationMode.Complete,
+            bool externalLockHeld = false) => Task.FromResult<IReplicationSession>(session);
 
         public Task<IReplicationSession> BeginIncrementalSyncAsync(
             string jobName,
             TableDefinition table,
             string currentCheckpoint,
-            CancellationToken cancellationToken) => Task.FromResult<IReplicationSession>(session);
+            CancellationToken cancellationToken,
+            bool retainDeletedRows = false,
+            SynchronizationMode mode = SynchronizationMode.Complete,
+            bool externalLockHeld = false) => Task.FromResult<IReplicationSession>(session);
     }
 
     private sealed class MeasuringSession : IReplicationSession

@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Replication;
@@ -163,6 +164,60 @@ public sealed class ReplicationEngineTests
         Assert.Equal("replacement-token", session.CommittedCheckpoint);
     }
 
+    [Fact]
+    public async Task SyncAsync_NoDataLossUsesFullMergeAndRetainsDeletedRows()
+    {
+        var session = new FakeSession();
+        var destination = new FakeDestination(session);
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(2, false, "replacement-token")]),
+            destination,
+            new FakeStateStore(new TableReplicationState("job", "account", TableState.Healthy, "old-token", null)));
+
+        var metrics = await engine.SyncAsync(
+            "job",
+            Table(),
+            100,
+            CancellationToken.None,
+            forceInitial: true,
+            preserveExisting: true,
+            retainDeletedRows: true,
+            mode: SynchronizationMode.NoDataLoss);
+
+        Assert.True(destination.BeganInitial);
+        Assert.False(destination.ReplaceExisting);
+        Assert.True(destination.RetainDeletedRows);
+        Assert.Equal(2, metrics.RecordsReceived);
+        Assert.Equal(1, metrics.RecordsInserted);
+        Assert.Equal(1, metrics.RecordsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncAsync_SwitchingFromNoDataLossToCompleteForcesReplacement()
+    {
+        var source = new FakeSource([Page(0, false, "replacement-token")]);
+        var destination = new FakeDestination(new FakeSession());
+        var state = new TableReplicationState(
+            "job",
+            "account",
+            TableState.Healthy,
+            "old-token",
+            null,
+            LastSyncMode: SynchronizationMode.NoDataLoss.ToString());
+        var engine = new ReplicationEngine(source, destination, new FakeStateStore(state));
+
+        _ = await engine.SyncAsync(
+            "job",
+            Table(),
+            100,
+            CancellationToken.None,
+            mode: SynchronizationMode.Complete);
+
+        Assert.True(destination.BeganInitial);
+        Assert.True(destination.ReplaceExisting);
+        Assert.Null(source.LastCheckpoint);
+    }
+
     private static SourcePage Page(int records, bool more, string? checkpoint)
     {
         var values = Enumerable.Range(0, records)
@@ -182,12 +237,15 @@ public sealed class ReplicationEngineTests
 
     private sealed class FakeSource(IEnumerable<SourcePage> pages) : ISourceChangeReader
     {
+        public string? LastCheckpoint { get; private set; }
+
         public async IAsyncEnumerable<SourcePage> ReadChangesAsync(
             TableDefinition table,
             string? dataCheckpoint,
             int pageSize,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            LastCheckpoint = dataCheckpoint;
             foreach (var page in pages)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -242,12 +300,22 @@ public sealed class ReplicationEngineTests
 
         public bool BeganIncremental { get; private set; }
 
+        public bool ReplaceExisting { get; private set; }
+
+        public bool RetainDeletedRows { get; private set; }
+
         public Task<IReplicationSession> BeginInitialSyncAsync(
             string jobName,
             TableDefinition table,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool replaceExisting = true,
+            bool retainDeletedRows = false,
+            SynchronizationMode mode = SynchronizationMode.Complete,
+            bool externalLockHeld = false)
         {
             BeganInitial = true;
+            ReplaceExisting = replaceExisting;
+            RetainDeletedRows = retainDeletedRows;
             return Task.FromResult<IReplicationSession>(session);
         }
 
@@ -255,7 +323,10 @@ public sealed class ReplicationEngineTests
             string jobName,
             TableDefinition table,
             string currentCheckpoint,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool retainDeletedRows = false,
+            SynchronizationMode mode = SynchronizationMode.Complete,
+            bool externalLockHeld = false)
         {
             BeganIncremental = true;
             return Task.FromResult<IReplicationSession>(session);

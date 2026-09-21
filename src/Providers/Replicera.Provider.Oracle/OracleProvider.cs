@@ -20,6 +20,13 @@ public sealed class OracleProvider : IDestinationProvider
     public IReplicationStateStore CreateStateStore(string connectionString) =>
         new OracleReplicationStateStore(connectionString);
 
+    public Task<IAsyncDisposable> AcquireTableLockAsync(
+        string connectionString,
+        string jobName,
+        string logicalName,
+        CancellationToken cancellationToken) =>
+        OracleTableLock.AcquireAsync(connectionString, jobName, logicalName, cancellationToken);
+
     public Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken) =>
         new OracleMetadataStore(connectionString).EnsureCreatedAsync(cancellationToken);
 }

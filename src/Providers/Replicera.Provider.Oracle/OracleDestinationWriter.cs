@@ -2,7 +2,9 @@ using System.Data;
 using System.Text.Json;
 using Oracle.ManagedDataAccess.Client;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Models;
+using Replicera.Core.Schema;
 
 namespace Replicera.Provider.Oracle;
 
@@ -11,18 +13,29 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
     public Task<IReplicationSession> BeginInitialSyncAsync(
         string jobName,
         TableDefinition table,
-        CancellationToken cancellationToken) => BeginAsync(jobName, table, "Initial", cancellationToken);
+        CancellationToken cancellationToken,
+        bool replaceExisting = true,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false) => BeginAsync(jobName, table, "Initial", replaceExisting, retainDeletedRows, mode, externalLockHeld, cancellationToken);
 
     public Task<IReplicationSession> BeginIncrementalSyncAsync(
         string jobName,
         TableDefinition table,
         string currentCheckpoint,
-        CancellationToken cancellationToken) => BeginAsync(jobName, table, "Incremental", cancellationToken);
+        CancellationToken cancellationToken,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false) => BeginAsync(jobName, table, "Incremental", false, retainDeletedRows, mode, externalLockHeld, cancellationToken);
 
     private async Task<IReplicationSession> BeginAsync(
         string jobName,
         TableDefinition table,
         string syncType,
+        bool replaceExisting,
+        bool retainDeletedRows,
+        SynchronizationMode mode,
+        bool externalLockHeld,
         CancellationToken cancellationToken)
     {
         var connection = new OracleConnection(connectionString);
@@ -40,9 +53,12 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                 OracleDmlBuilder.BuildCreateStaging(table, stagingName),
                 cancellationToken).ConfigureAwait(false);
             transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted);
-            await AcquireLockAsync(connection, transaction, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
+            if (!externalLockHeld)
+            {
+                await AcquireLockAsync(connection, transaction, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
+            }
             await CreateRunMetadataAsync(connection, transaction, runId, tableId, jobName, syncType, cancellationToken).ConfigureAwait(false);
-            if (syncType == "Initial")
+            if (replaceExisting)
             {
                 await ExecuteAsync(
                     connection,
@@ -50,8 +66,16 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                     $"DELETE FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}",
                     cancellationToken).ConfigureAwait(false);
             }
+            else if (syncType == "Initial" && retainDeletedRows)
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    $"UPDATE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} SET {OracleIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)} = COALESCE({OracleIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)}, SYSTIMESTAMP)",
+                    cancellationToken).ConfigureAwait(false);
+            }
 
-            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType);
+            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode);
         }
         catch
         {
@@ -186,7 +210,9 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         Guid tableId,
         TableDefinition table,
         string stagingName,
-        string syncType) : IReplicationSession
+        string syncType,
+        bool retainDeletedRows,
+        SynchronizationMode mode) : IReplicationSession
     {
         private bool completed;
 
@@ -200,8 +226,8 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
 
             await InsertStagingAsync(page, cancellationToken).ConfigureAwait(false);
             var result = await CountOperationsAsync(cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildApplyStaging(table, stagingName), cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildDeleteStagingChanges(table, stagingName), cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows), cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildDeleteStagingChanges(table, stagingName, retainDeletedRows), cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildClearStaging(stagingName), cancellationToken).ConfigureAwait(false);
             return result;
         }
@@ -220,11 +246,13 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                         LAST_SUCCESSFUL_SYNC_UTC = SYSTIMESTAMP,
                         LAST_INCREMENTAL_SYNC_UTC = CASE WHEN :sync_type = 'Incremental' THEN SYSTIMESTAMP ELSE LAST_INCREMENTAL_SYNC_UTC END,
                         LAST_FULL_SYNC_UTC = CASE WHEN :sync_type = 'Initial' THEN SYSTIMESTAMP ELSE LAST_FULL_SYNC_UTC END,
+                        LAST_SYNC_MODE = :sync_mode,
                         STATUS = 'Healthy'
                     WHERE TABLE_ID = :table_id
                     """;
                 updateTable.Parameters.Add("checkpoint", OracleDbType.NClob).Value = newCheckpoint;
                 updateTable.Parameters.Add("sync_type", OracleDbType.NVarchar2).Value = syncType;
+                updateTable.Parameters.Add("sync_mode", OracleDbType.NVarchar2).Value = mode.ToString();
                 updateTable.Parameters.Add("table_id", OracleDbType.Raw, 16).Value = OracleValueConverter.ToBytes(tableId);
                 _ = await updateTable.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }

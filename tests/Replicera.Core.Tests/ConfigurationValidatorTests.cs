@@ -66,6 +66,37 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(issues, issue => issue.Path == "sources" && issue.Message.Contains("duplicated", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Validate_RejectsRenameMappingsForUnconfiguredTablesAndDuplicateTargets()
+    {
+        var valid = ValidConfiguration();
+        var configuration = valid with
+        {
+            Jobs =
+            [
+                valid.Jobs[0] with
+                {
+                    Schema = new SchemaPolicy
+                    {
+                        ColumnRenames = new Dictionary<string, IReadOnlyDictionary<string, string>>
+                        {
+                            ["contact"] = new Dictionary<string, string>
+                            {
+                                ["old_one"] = "new_name",
+                                ["old_two"] = "NEW_NAME"
+                            }
+                        }
+                    }
+                }
+            ]
+        };
+
+        var issues = ConfigurationValidator.Validate(configuration);
+
+        Assert.Contains(issues, issue => issue.Message.Contains("not configured", StringComparison.Ordinal));
+        Assert.Contains(issues, issue => issue.Message.Contains("Multiple columns", StringComparison.Ordinal));
+    }
+
     private static RepliceraConfiguration ValidConfiguration() => new()
     {
         Sources =

@@ -19,18 +19,32 @@ public sealed record DestinationTable(
 public enum SchemaChangeKind
 {
     CreateTable,
+    RecreateTable,
+    DropTable,
     AddColumn,
+    AddLookupTypeColumn,
+    AddManagedColumn,
+    RenameColumn,
+    DropColumn,
     ExpandColumn,
     SourceColumnRemoved,
     IncompatibleColumn,
     OwnershipConflict
+}
+
+public static class ManagedColumnNames
+{
+    public const string DataLoadDate = "data_load_dte";
+
+    public const string SourceRemoveDate = "date_source_remove_dte";
 }
 public sealed record SchemaChange(
     SchemaChangeKind Kind,
     string ObjectName,
     string Description,
     bool IsAutomatic,
-    bool IsBlocking);
+    bool IsBlocking,
+    string? NewObjectName = null);
 
 public sealed record SchemaPlan(IReadOnlyList<SchemaChange> Changes)
 {

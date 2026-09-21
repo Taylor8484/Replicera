@@ -70,9 +70,43 @@ public static class ConfigurationValidator
             {
                 issues.Add(new($"{path}.sync.batchSize", "Batch size must be between 1 and 5000."));
             }
+
+            ValidateColumnRenames(job, path, issues);
         }
 
         return issues;
+    }
+
+    private static void ValidateColumnRenames(
+        JobConfiguration job,
+        string jobPath,
+        List<ValidationIssue> issues)
+    {
+        foreach (var table in job.Schema.ColumnRenames)
+        {
+            var path = $"{jobPath}.schema.columnRenames.{table.Key}";
+            if (!job.Tables.Contains(table.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                issues.Add(new(path, $"Rename mappings reference table '{table.Key}', which is not configured for the job."));
+            }
+
+            var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var rename in table.Value)
+            {
+                if (string.IsNullOrWhiteSpace(rename.Key) || string.IsNullOrWhiteSpace(rename.Value))
+                {
+                    issues.Add(new(path, "Column rename source and target names are required."));
+                }
+                else if (string.Equals(rename.Key, rename.Value, StringComparison.OrdinalIgnoreCase))
+                {
+                    issues.Add(new(path, $"Column rename '{rename.Key}' must change the column name."));
+                }
+                else if (!targets.Add(rename.Value))
+                {
+                    issues.Add(new(path, $"Multiple columns cannot be renamed to '{rename.Value}'."));
+                }
+            }
+        }
     }
 
     private static readonly HashSet<string> SupportedProviders =

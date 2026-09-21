@@ -68,7 +68,7 @@ internal static class RuntimeCommands
         var trackingStatus = await tracking.GetStatusAsync(logicalName, cancellationToken).ConfigureAwait(false);
         var schema = context.Provider.CreateSchemaManager(context.ConnectionString);
         var destination = await schema.ReadTableAsync(table, cancellationToken).ConfigureAwait(false);
-        var plan = SchemaPlanner.Plan(table, destination, context.Job.Schema);
+        var plan = SchemaPlanner.Plan(table, destination, context.Job.Schema, context.Job.Sync.Mode);
         var destinationSchema = destination?.Schema ?? context.Provider.DefaultSchema;
 
         var actions = new List<InspectionAction>();
@@ -93,6 +93,7 @@ internal static class RuntimeCommands
                 {
                     source = table.LogicalName,
                     destination = $"{destinationSchema}.{table.DestinationName}",
+                    mode = FormatMode(context.Job.Sync.Mode),
                     primaryKey = table.PrimaryKey.LogicalName,
                     supportedColumns = table.Columns.Count(column => column.IsSupported),
                     unsupportedColumns = table.Columns.Count(column => !column.IsSupported),
@@ -106,6 +107,7 @@ internal static class RuntimeCommands
 
         await output.WriteLineAsync($"Source: {table.LogicalName}").ConfigureAwait(false);
         await output.WriteLineAsync($"Destination: {destinationSchema}.{table.DestinationName}").ConfigureAwait(false);
+        await output.WriteLineAsync($"Mode: {FormatMode(context.Job.Sync.Mode)}").ConfigureAwait(false);
         await output.WriteLineAsync($"Primary key: {table.PrimaryKey.LogicalName}").ConfigureAwait(false);
         await output.WriteLineAsync($"Columns: {table.Columns.Count(column => column.IsSupported)} supported, {table.Columns.Count(column => !column.IsSupported)} unsupported").ConfigureAwait(false);
         await output.WriteLineAsync($"Change tracking: {FormatTracking(trackingStatus)}").ConfigureAwait(false);
@@ -166,10 +168,53 @@ internal static class RuntimeCommands
         await source.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
         await destinationConnection.TestConnectionAsync(cancellationToken).ConfigureAwait(false);
         await context.Provider.EnsureMetadataStoreAsync(context.ConnectionString, cancellationToken).ConfigureAwait(false);
+        var availableTables = (await source.ListTablesAsync(cancellationToken).ConfigureAwait(false))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var logicalName in tables)
         {
             var started = Stopwatch.GetTimestamp();
+            await using var tableLock = await context.Provider.AcquireTableLockAsync(
+                context.ConnectionString,
+                context.Job.Name,
+                logicalName,
+                cancellationToken).ConfigureAwait(false);
+            if (!availableTables.Contains(logicalName))
+            {
+                var presence = await source.ConfirmTablePresenceAsync(logicalName, cancellationToken).ConfigureAwait(false);
+                if (presence == SourceTablePresence.Present)
+                {
+                    availableTables.Add(logicalName);
+                }
+                else
+                {
+                    var missingTableSchema = context.Provider.CreateSchemaManager(context.ConnectionString);
+                    var dropped = await missingTableSchema.ReconcileMissingTableAsync(
+                        context.Job.Name,
+                        logicalName,
+                        context.Job.Sync.Mode,
+                        cancellationToken).ConfigureAwait(false);
+                    if (structuredOutput)
+                    {
+                        await WriteJsonAsync(output, new
+                        {
+                            job = context.Job.Name,
+                            table = logicalName,
+                            status = "sourceMissing",
+                            mode = FormatMode(context.Job.Sync.Mode),
+                            action = dropped ? "dropped" : "retained"
+                        }).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await output.WriteLineAsync(
+                            $"{logicalName}: source table is missing; destination {(dropped ? "dropped" : "retained")}.").ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+            }
+
             var table = await source.GetTableAsync(logicalName, cancellationToken).ConfigureAwait(false);
             var trackingStatus = await tracking.GetStatusAsync(logicalName, cancellationToken).ConfigureAwait(false);
             if (!trackingStatus.IsEnabled)
@@ -186,13 +231,26 @@ internal static class RuntimeCommands
 
             var schema = context.Provider.CreateSchemaManager(context.ConnectionString);
             var currentDestination = await schema.ReadTableAsync(table, cancellationToken).ConfigureAwait(false);
-            var plan = SchemaPlanner.Plan(table, currentDestination, context.Job.Schema);
+            var plan = SchemaPlanner.Plan(table, currentDestination, context.Job.Schema, context.Job.Sync.Mode);
             await schema.ApplySchemaPlanAsync(context.Job.Name, table, plan, cancellationToken).ConfigureAwait(false);
+
+            var mode = context.Job.Sync.Mode;
+            var schemaRequiresFullRead = plan.Changes.Any(change => change.Kind is
+                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn);
+            var stateStore = context.Provider.CreateStateStore(context.ConnectionString);
+            var currentState = await stateStore.GetTableStateAsync(context.Job.Name, logicalName, cancellationToken).ConfigureAwait(false);
+            var modeRequiresFullRead = string.Equals(
+                currentState?.LastSyncMode,
+                SynchronizationMode.NoDataLoss.ToString(),
+                StringComparison.OrdinalIgnoreCase)
+                && mode == SynchronizationMode.Complete;
+            var fullRead = forceInitial || mode == SynchronizationMode.Reload || schemaRequiresFullRead || modeRequiresFullRead;
+            var preserveExisting = mode == SynchronizationMode.NoDataLoss;
 
             var engine = new ReplicationEngine(
                 new DataverseChangeReader(service),
                 context.Provider.CreateWriter(context.ConnectionString),
-                context.Provider.CreateStateStore(context.ConnectionString),
+                stateStore,
                 verbose || structuredDiagnostics
                     ? new ReplicationConsoleLogger(diagnostics, structuredDiagnostics)
                     : null);
@@ -201,7 +259,11 @@ internal static class RuntimeCommands
                 table,
                 context.Job.Sync.BatchSize,
                 cancellationToken,
-                forceInitial).ConfigureAwait(false);
+                fullRead,
+                preserveExisting,
+                retainDeletedRows: preserveExisting,
+                mode: mode,
+                externalLockHeld: true).ConfigureAwait(false);
             var duration = Stopwatch.GetElapsedTime(started);
             if (structuredOutput)
             {
@@ -212,7 +274,8 @@ internal static class RuntimeCommands
                         job = context.Job.Name,
                         table = logicalName,
                         status = "succeeded",
-                        full = forceInitial,
+                        full = fullRead,
+                        mode = FormatMode(mode),
                         durationMilliseconds = (long)duration.TotalMilliseconds,
                         pages = metrics.PagesProcessed,
                         received = metrics.RecordsReceived,
@@ -239,6 +302,7 @@ internal static class RuntimeCommands
         CancellationToken cancellationToken)
     {
         var context = await LoadContextAsync(configPath, jobName, cancellationToken).ConfigureAwait(false);
+        await context.Provider.EnsureMetadataStoreAsync(context.ConnectionString, cancellationToken).ConfigureAwait(false);
         var store = context.Provider.CreateStateStore(context.ConnectionString);
         var statuses = new List<StatusOutput>();
         foreach (var table in context.Job.Tables)
@@ -256,7 +320,8 @@ internal static class RuntimeCommands
                 state?.LastRunRecordsUpdated,
                 state?.LastRunRecordsDeleted,
                 state?.LastErrorCode,
-                state?.LastErrorMessage));
+                state?.LastErrorMessage,
+                state?.LastSyncMode));
         }
 
         if (structuredOutput)
@@ -265,11 +330,11 @@ internal static class RuntimeCommands
         }
         else
         {
-            await output.WriteLineAsync("TABLE\tSTATE\tLAST SUCCESS\tLAST RUN\tINSERT\tUPDATE\tDELETE\tERROR").ConfigureAwait(false);
+            await output.WriteLineAsync("TABLE\tSTATE\tMODE\tLAST SUCCESS\tLAST RUN\tINSERT\tUPDATE\tDELETE\tERROR").ConfigureAwait(false);
             foreach (var status in statuses)
             {
                 await output.WriteLineAsync(
-                    $"{status.Table}\t{status.State}\t{status.LastSuccessfulSyncUtc?.ToString("u") ?? "-"}\t" +
+                    $"{status.Table}\t{status.State}\t{status.LastSyncMode ?? "-"}\t{status.LastSuccessfulSyncUtc?.ToString("u") ?? "-"}\t" +
                     $"{FormatLastRun(status)}\t{status.RecordsInserted?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}\t" +
                     $"{status.RecordsUpdated?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}\t{status.RecordsDeleted?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}\t" +
                     $"{FormatError(status)}").ConfigureAwait(false);
@@ -313,6 +378,14 @@ internal static class RuntimeCommands
     private static string FormatTracking(Core.Abstractions.ChangeTrackingStatus status) =>
         status.IsEnabled ? "Enabled" : status.CanEnable ? "Disabled (can enable)" : $"Disabled ({status.BlockedReason})";
 
+    private static string FormatMode(SynchronizationMode mode) => mode switch
+    {
+        SynchronizationMode.Complete => "complete",
+        SynchronizationMode.NoDataLoss => "noDataLoss",
+        SynchronizationMode.Reload => "reload",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown synchronization mode.")
+    };
+
     private static string FormatLastRun(StatusOutput status) => status.LastRunStartedUtc is null
         ? "-"
         : $"{status.LastRunType ?? "Unknown"} {status.LastRunStartedUtc:u}";
@@ -340,7 +413,8 @@ internal static class RuntimeCommands
         long? RecordsUpdated,
         long? RecordsDeleted,
         string? ErrorCode,
-        string? ErrorMessage);
+        string? ErrorMessage,
+        string? LastSyncMode);
 
     private sealed record RuntimeContext(
         JobConfiguration Job,

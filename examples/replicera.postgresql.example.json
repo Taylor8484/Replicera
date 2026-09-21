@@ -25,15 +25,15 @@
       "destination": "development-postgres",
       "tables": ["account"],
       "sync": {
+        "mode": "complete",
         "enableChangeTracking": true,
         "batchSize": 5000
       },
       "schema": {
+        "columnRenames": {},
         "createTables": "automatic",
         "addColumns": "automatic",
         "expandCompatibleColumns": "automatic",
-        "dropColumns": "manual",
-        "dropTables": "manual",
         "incompatibleChanges": "stop"
       }
     }

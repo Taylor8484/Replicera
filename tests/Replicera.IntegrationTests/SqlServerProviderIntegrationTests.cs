@@ -19,6 +19,42 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var provider = new SqlServerProvider();
+        await using (var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken));
+        }
+
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "CREATE VIEW [dbo].[account_view] AS SELECT [accountid] FROM [dbo].[account];";
+            _ = await command.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new SqlServerSchemaManager(database.ConnectionString);
+        var current = await schema.ReadTableAsync(table, TestCancellationToken);
+        var plan = SchemaPlanner.Plan(table, current, new SchemaPolicy(), SynchronizationMode.Reload);
+        var error = await Assert.ThrowsAsync<RepliceraException>(() =>
+            schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken));
+        Assert.Equal(ErrorCategory.SchemaConflict, error.Category);
+        Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
         await using var database = await TestDatabase.CreateAsync();
@@ -201,6 +237,14 @@ public sealed class SqlServerProviderIntegrationTests
 
         var initial = AccountsTable(nameLength: 20);
         await PrepareTableAsync(database.ConnectionString, initial);
+        await using (var checkpointConnection = new SqlConnection(database.ConnectionString))
+        {
+            await checkpointConnection.OpenAsync(TestCancellationToken);
+            await using var checkpoint = checkpointConnection.CreateCommand();
+            checkpoint.CommandText = "UPDATE [replicera].[Tables] SET [ChangeCheckpoint] = N'old-checkpoint' WHERE [DataverseLogicalName] = N'account';";
+            _ = await checkpoint.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
         var expanded = AccountsTable(nameLength: 400, includeDescription: true);
         var schema = new SqlServerSchemaManager(database.ConnectionString);
         var current = await schema.ReadTableAsync(expanded, TestCancellationToken);
@@ -214,12 +258,25 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.NotNull(applied);
         Assert.Equal(400, applied.Columns.Single(column => column.Name == "name").MaxLength);
         Assert.Contains(applied.Columns, column => column.Name == "description" && column.IsNullable);
+        var resetState = await new SqlServerReplicationStateStore(database.ConnectionString)
+            .GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotNull(resetState);
+        Assert.Null(resetState.DataCheckpoint);
+        Assert.Equal(TableState.ResyncRequired, resetState.State);
+
+        var contracted = AccountsTable(nameLength: 400);
+        var dropPlan = SchemaPlanner.Plan(contracted, applied, new SchemaPolicy());
+        Assert.Contains(dropPlan.Changes, change => change.Kind == SchemaChangeKind.DropColumn);
+        await schema.ApplySchemaPlanAsync("integration", contracted, dropPlan, TestCancellationToken);
+        var contractedDestination = await schema.ReadTableAsync(contracted, TestCancellationToken);
+        Assert.NotNull(contractedDestination);
+        Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "description");
 
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync(TestCancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT_BIG(*) FROM [replicera].[SchemaHistory];";
-        Assert.Equal(3, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal(5, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -726,7 +783,7 @@ public sealed class SqlServerProviderIntegrationTests
                 {
                     LogicalName = "description",
                     SourceType = SourceType.String,
-                    IsNullable = true,
+                    IsNullable = false,
                     MaxLength = 1_000
                 }
             ]

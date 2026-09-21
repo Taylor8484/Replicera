@@ -1,7 +1,9 @@
 using System.Data;
 using Microsoft.Data.SqlClient;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Models;
+using Replicera.Core.Schema;
 
 namespace Replicera.Provider.SqlServer;
 
@@ -10,18 +12,29 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
     public Task<IReplicationSession> BeginInitialSyncAsync(
         string jobName,
         TableDefinition table,
-        CancellationToken cancellationToken) => BeginAsync(jobName, table, "Initial", cancellationToken);
+        CancellationToken cancellationToken,
+        bool replaceExisting = true,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false) => BeginAsync(jobName, table, "Initial", replaceExisting, retainDeletedRows, mode, externalLockHeld, cancellationToken);
 
     public Task<IReplicationSession> BeginIncrementalSyncAsync(
         string jobName,
         TableDefinition table,
         string currentCheckpoint,
-        CancellationToken cancellationToken) => BeginAsync(jobName, table, "Incremental", cancellationToken);
+        CancellationToken cancellationToken,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false) => BeginAsync(jobName, table, "Incremental", false, retainDeletedRows, mode, externalLockHeld, cancellationToken);
 
     private async Task<IReplicationSession> BeginAsync(
         string jobName,
         TableDefinition table,
         string syncType,
+        bool replaceExisting,
+        bool retainDeletedRows,
+        SynchronizationMode mode,
+        bool externalLockHeld,
         CancellationToken cancellationToken)
     {
         var connection = new SqlConnection(connectionString);
@@ -37,7 +50,10 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             transaction = (SqlTransaction)await connection.BeginTransactionAsync(
                 IsolationLevel.ReadCommitted,
                 cancellationToken).ConfigureAwait(false);
-            await AcquireLockAsync(connection, transaction, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
+            if (!externalLockHeld)
+            {
+                await AcquireLockAsync(connection, transaction, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
+            }
 
             var runId = Guid.NewGuid();
             await CreateRunMetadataAsync(
@@ -54,7 +70,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                 transaction,
                 SqlServerDmlBuilder.BuildCreateStaging(table, stagingName),
                 cancellationToken).ConfigureAwait(false);
-            if (syncType == "Initial")
+            if (replaceExisting)
             {
                 await ExecuteAsync(
                     connection,
@@ -62,8 +78,16 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                     $"DELETE FROM [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))};",
                     cancellationToken).ConfigureAwait(false);
             }
+            else if (syncType == "Initial" && retainDeletedRows)
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    $"UPDATE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} SET {SqlServerIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)} = COALESCE({SqlServerIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)}, SYSUTCDATETIME());",
+                    cancellationToken).ConfigureAwait(false);
+            }
 
-            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType);
+            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode);
         }
         catch
         {
@@ -188,7 +212,9 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
         Guid tableId,
         TableDefinition table,
         string stagingName,
-        string syncType) : IReplicationSession
+        string syncType,
+        bool retainDeletedRows,
+        SynchronizationMode mode) : IReplicationSession
     {
         private bool committed;
 
@@ -216,7 +242,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             await ExecuteAsync(
                 connection,
                 transaction,
-                SqlServerDmlBuilder.BuildApplyStaging(table, stagingName),
+                SqlServerDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows: retainDeletedRows),
                 cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, $"TRUNCATE TABLE [dbo].{SqlServerIdentifier.Quote(stagingName)};", cancellationToken).ConfigureAwait(false);
             return result;
@@ -243,6 +269,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                     [LastSuccessfulSyncUtc] = SYSUTCDATETIME(),
                     [LastIncrementalSyncUtc] = CASE WHEN @syncType = N'Incremental' THEN SYSUTCDATETIME() ELSE [LastIncrementalSyncUtc] END,
                     [LastFullSyncUtc] = CASE WHEN @syncType = N'Initial' THEN SYSUTCDATETIME() ELSE [LastFullSyncUtc] END,
+                    [LastSyncMode] = @syncMode,
                     [Status] = N'Healthy'
                 WHERE [TableId] = @tableId;
 
@@ -256,6 +283,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             _ = command.Parameters.AddWithValue("@tableId", tableId);
             _ = command.Parameters.AddWithValue("@runId", runId);
             _ = command.Parameters.AddWithValue("@syncType", syncType);
+            _ = command.Parameters.AddWithValue("@syncMode", mode.ToString());
             _ = command.Parameters.AddWithValue("@received", metrics.RecordsReceived);
             _ = command.Parameters.AddWithValue("@inserted", metrics.RecordsInserted);
             _ = command.Parameters.AddWithValue("@updated", metrics.RecordsUpdated);

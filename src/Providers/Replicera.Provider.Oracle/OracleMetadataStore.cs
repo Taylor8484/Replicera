@@ -4,7 +4,7 @@ namespace Replicera.Provider.Oracle;
 
 public sealed class OracleMetadataStore(string connectionString)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public async Task EnsureCreatedAsync(CancellationToken cancellationToken)
     {
@@ -15,13 +15,18 @@ public sealed class OracleMetadataStore(string connectionString)
             await ExecuteDdlAsync(connection, statement, cancellationToken).ConfigureAwait(false);
         }
 
+        foreach (var statement in MigrationTwo)
+        {
+            await ExecuteDdlAsync(connection, statement, cancellationToken).ConfigureAwait(false);
+        }
+
         await using var command = connection.CreateCommand();
         command.BindByName = true;
         command.CommandText = """
             MERGE INTO REPLICERA_SCHEMA_VERSIONS target
-            USING (SELECT 1 AS VERSION FROM DUAL) source
+            USING (SELECT 1 AS VERSION FROM DUAL UNION ALL SELECT 2 AS VERSION FROM DUAL) source
             ON (target.VERSION = source.VERSION)
-            WHEN NOT MATCHED THEN INSERT (VERSION, APPLIED_UTC) VALUES (1, SYSTIMESTAMP)
+            WHEN NOT MATCHED THEN INSERT (VERSION, APPLIED_UTC) VALUES (source.VERSION, SYSTIMESTAMP)
             """;
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -37,7 +42,7 @@ public sealed class OracleMetadataStore(string connectionString)
             command.CommandText = statement;
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OracleException exception) when (exception.Number == 955)
+        catch (OracleException exception) when (exception.Number is 955 or 1430)
         {
             // Another run or a previous migration already created the object.
         }
@@ -107,5 +112,10 @@ public sealed class OracleMetadataStore(string connectionString)
             CONSTRAINT FK_REPLICERA_HISTORY_TABLE FOREIGN KEY (TABLE_ID) REFERENCES REPLICERA_TABLES (TABLE_ID)
         )
         """
+    ];
+
+    internal static readonly string[] MigrationTwo =
+    [
+        "ALTER TABLE REPLICERA_TABLES ADD (LAST_SYNC_MODE NVARCHAR2(32) NULL)"
     ];
 }

@@ -71,7 +71,7 @@ replicera destination add --name development-postgres --provider postgresql \
   --connection-env REPLICERA_POSTGRES_CONNECTION_STRING
 replicera destination add --name development-oracle --provider oracle \
   --connection-env REPLICERA_ORACLE_CONNECTION_STRING
-replicera job add --name development --source development-dataverse --destination development-sql --table account
+replicera job add --name development --source development-dataverse --destination development-sql --table account --mode complete
 replicera tables add contact --job development
 ```
 
@@ -79,7 +79,11 @@ The `--secret-env` and `--connection-env` arguments are environment-variable nam
 Use `source add --interactive`, `destination add --interactive`, or `job add --interactive` to prompt for omitted setup values. The prompts request secret-variable names, never secret contents.
 
 `inspect` reads Dataverse and destination metadata but does not enable change tracking or modify destination schema. `sync` performs those configured mutations.
-Use `sync --full --table <name>` for a controlled rebuild. The existing destination data and checkpoint remain recoverable if the rebuild transaction fails.
+Jobs support three synchronization modes: `complete` (the default) mirrors source rows and columns, including deletions; `noDataLoss` adds and updates while timestamping retained source-deleted rows; and `reload` drops, recreates, and fully loads each table on every run. Newly detected columns are created nullable and trigger a full read so existing rows can be populated. Every table includes `data_load_dte`; `noDataLoss` tables also include `date_source_remove_dte`. Configure the JSON `sync.mode`, or pass `--mode complete|no-data-loss|reload` to `job add`.
+
+Declare known Dataverse column renames under `schema.columnRenames.<table>` to preserve destination values. Destructive drops are dependency-checked and never cascade. A source table is dropped only after a direct Dataverse metadata request confirms that it no longer exists.
+Reload mode is intentionally destructive and is intended for development or small tables: a failed load leaves the recreated table available for a rerun but does not restore its previous physical contents.
+Use `sync --full --table <name>` to force a full source read. In `complete` mode it performs a controlled replacement; in `noDataLoss` mode it performs a non-destructive full merge. The existing destination data and checkpoint remain recoverable if the transaction fails.
 Use `--json` with `inspect`, `sync`, or `status` for machine-readable results. `sync --verbose` writes replication progress to standard error; `sync --log-json` writes the same diagnostics as JSON Lines for central logging.
 `status` reports each table's state, last successful sync, latest run type/time, row counts, and sanitized failure details.
 

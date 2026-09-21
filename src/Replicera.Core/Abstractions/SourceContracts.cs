@@ -12,6 +12,14 @@ public interface ISourceMetadataReader
     Task<IReadOnlyList<string>> ListTablesAsync(CancellationToken cancellationToken);
 
     Task<TableDefinition> GetTableAsync(string logicalName, CancellationToken cancellationToken);
+
+    Task<SourceTablePresence> ConfirmTablePresenceAsync(string logicalName, CancellationToken cancellationToken);
+}
+
+public enum SourceTablePresence
+{
+    Present,
+    Missing
 }
 
 public interface ISourceChangeReader

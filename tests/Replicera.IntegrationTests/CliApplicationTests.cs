@@ -147,6 +147,7 @@ public sealed class CliApplicationTests
                     "--destination", "development-sql",
                     "--table", "account",
                     "--table", "contact",
+                    "--mode", "no-data-loss",
                     "--config", path
                 ],
                 TextWriter.Null,
@@ -168,6 +169,7 @@ public sealed class CliApplicationTests
             Assert.Equal(0, removeExit);
             var complete = await ConfigurationFile.LoadAsync(path, CancellationToken.None);
             Assert.Equal(["account", "lead"], Assert.Single(complete.Jobs).Tables);
+            Assert.Equal(SynchronizationMode.NoDataLoss, complete.Jobs[0].Sync.Mode);
         }
         finally
         {

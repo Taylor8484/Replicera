@@ -20,6 +20,13 @@ public sealed class SqlServerProvider : IDestinationProvider
     public IReplicationStateStore CreateStateStore(string connectionString) =>
         new SqlServerReplicationStateStore(connectionString);
 
+    public Task<IAsyncDisposable> AcquireTableLockAsync(
+        string connectionString,
+        string jobName,
+        string logicalName,
+        CancellationToken cancellationToken) =>
+        SqlServerTableLock.AcquireAsync(connectionString, jobName, logicalName, cancellationToken);
+
     public Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken) =>
         new SqlServerMetadataStore(connectionString).EnsureCreatedAsync(cancellationToken);
 }

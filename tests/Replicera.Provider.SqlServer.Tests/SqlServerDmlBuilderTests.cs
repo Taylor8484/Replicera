@@ -35,6 +35,19 @@ public sealed class SqlServerDmlBuilderTests
     }
 
     [Fact]
+    public void BuildApplyStaging_NoDataLossStampsLoadsAndSourceRemovals()
+    {
+        var sql = SqlServerDmlBuilder.BuildApplyStaging(
+            Table(),
+            "replicera_stage_123",
+            retainDeletedRows: true);
+
+        Assert.Contains("[data_load_dte] = SYSUTCDATETIME()", sql, StringComparison.Ordinal);
+        Assert.Contains("[date_source_remove_dte] = NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(target.[date_source_remove_dte], SYSUTCDATETIME())", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CreateBatch_PreservesLookupTargetAndStableChoiceJson()
     {
         var id = Guid.NewGuid();

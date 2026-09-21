@@ -4,14 +4,14 @@ namespace Replicera.Provider.PostgreSql;
 
 public sealed class PostgreSqlMetadataStore(string connectionString)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public async Task EnsureCreatedAsync(CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = new NpgsqlCommand(MigrationOne, connection, transaction);
+        await using var command = new NpgsqlCommand($"{MigrationOne}{Environment.NewLine}{MigrationTwo}", connection, transaction);
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -77,6 +77,14 @@ public sealed class PostgreSqlMetadataStore(string connectionString)
 
         INSERT INTO replicera.schema_versions (version, applied_utc)
         VALUES (1, CURRENT_TIMESTAMP)
+        ON CONFLICT (version) DO NOTHING;
+        """;
+
+    internal const string MigrationTwo = """
+        ALTER TABLE replicera.tables ADD COLUMN IF NOT EXISTS last_sync_mode character varying(32) NULL;
+
+        INSERT INTO replicera.schema_versions (version, applied_utc)
+        VALUES (2, CURRENT_TIMESTAMP)
         ON CONFLICT (version) DO NOTHING;
         """;
 }

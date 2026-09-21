@@ -21,7 +21,7 @@ public sealed class SqlServerReplicationStateStore(string connectionString) : IR
             SELECT t.[Status], t.[ChangeCheckpoint], t.[LastSuccessfulSyncUtc],
                    latest.[SyncType], latest.[StartedUtc], latest.[CompletedUtc],
                    latest.[RecordsInserted], latest.[RecordsUpdated], latest.[RecordsDeleted],
-                   latest.[ErrorCode], latest.[ErrorMessage]
+                   latest.[ErrorCode], latest.[ErrorMessage], t.[LastSyncMode]
             FROM [replicera].[Tables] AS t
             OUTER APPLY
             (
@@ -58,7 +58,8 @@ public sealed class SqlServerReplicationStateStore(string connectionString) : IR
             reader.IsDBNull(7) ? null : reader.GetInt64(7),
             reader.IsDBNull(8) ? null : reader.GetInt64(8),
             reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.IsDBNull(10) ? null : reader.GetString(10));
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : reader.GetString(11));
     }
 
     public async Task MarkFailureAsync(

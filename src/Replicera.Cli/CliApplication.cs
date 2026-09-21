@@ -291,13 +291,27 @@ public static class CliApplication
             throw new RepliceraException(ErrorCategory.Configuration, $"Option '--batch-size' is not a valid integer: '{batchSizeText}'.");
         }
 
+        var modeText = GetOption(arguments, "--mode")
+            ?? (interactive
+                ? await PromptAsync(input, output, "Synchronization mode (complete, no-data-loss, reload)", "complete", cancellationToken).ConfigureAwait(false)
+                : "complete");
+        var mode = modeText.ToLowerInvariant() switch
+        {
+            "complete" => SynchronizationMode.Complete,
+            "no-data-loss" or "nodataloss" => SynchronizationMode.NoDataLoss,
+            "reload" => SynchronizationMode.Reload,
+            _ => throw new RepliceraException(
+                ErrorCategory.Configuration,
+                $"Option '--mode' must be complete, no-data-loss, or reload: '{modeText}'.")
+        };
+
         var job = new JobConfiguration
         {
             Name = name,
             Source = source,
             Destination = destination,
             Tables = tables.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray(),
-            Sync = new SyncPolicy { BatchSize = batchSize }
+            Sync = new SyncPolicy { BatchSize = batchSize, Mode = mode }
         };
         var updated = configuration with { Jobs = [.. configuration.Jobs, job] };
         await ConfigurationFile.SaveAsync(path, updated, cancellationToken).ConfigureAwait(false);
@@ -310,7 +324,7 @@ public static class CliApplication
         var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
         foreach (var job in configuration.Jobs.OrderBy(job => job.Name, StringComparer.OrdinalIgnoreCase))
         {
-            await output.WriteLineAsync($"{job.Name}\t{job.Source}\t{job.Destination}\t{job.Tables.Count} tables").ConfigureAwait(false);
+            await output.WriteLineAsync($"{job.Name}\t{job.Source}\t{job.Destination}\t{job.Tables.Count} tables\t{FormatMode(job.Sync.Mode)}").ConfigureAwait(false);
         }
 
         return (int)ExitCode.Success;
@@ -437,6 +451,14 @@ public static class CliApplication
         _ => throw new RepliceraException(ErrorCategory.Configuration, $"Unknown authentication method '{value}'.")
     };
 
+    private static string FormatMode(SynchronizationMode mode) => mode switch
+    {
+        SynchronizationMode.Complete => "complete",
+        SynchronizationMode.NoDataLoss => "noDataLoss",
+        SynchronizationMode.Reload => "reload",
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown synchronization mode.")
+    };
+
     private static async Task<string> GetRequiredValueAsync(
         IReadOnlyList<string> arguments,
         string option,
@@ -508,7 +530,7 @@ public static class CliApplication
           replicera source bootstrap-permissions [--name <source>] [--role-name <role>] [--json] [--config <path>]
           replicera destination add [--interactive] --name <name> --connection-env <variable> [--provider sqlserver|postgresql|oracle] [--config <path>]
           replicera destination list [--config <path>]
-          replicera job add [--interactive] --name <name> --source <source> --destination <destination> --table <table> [--table <table>] [--batch-size <count>] [--config <path>]
+          replicera job add [--interactive] --name <name> --source <source> --destination <destination> --table <table> [--table <table>] [--batch-size <count>] [--mode complete|no-data-loss|reload] [--config <path>]
           replicera job list [--config <path>]
           replicera tables list [--config <path>]
           replicera tables add <table> [--job <name>] [--config <path>]

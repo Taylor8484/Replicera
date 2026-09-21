@@ -1,4 +1,6 @@
 using Oracle.ManagedDataAccess.Client;
+using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
 using Replicera.Provider.Oracle;
@@ -9,6 +11,45 @@ public sealed class OracleProviderIntegrationTests
 {
     private const string ConnectionEnvironmentVariable = "REPLICERA_ORACLE_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
+    public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        var provider = new OracleProvider();
+        await using (var tableLock = await provider.AcquireTableLockAsync(connectionString, job, "account", TestCancellationToken))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await provider.AcquireTableLockAsync(connectionString, job, "account", TestCancellationToken));
+        }
+
+        var viewName = $"account_view_{suffix}";
+        await using (var connection = new OracleConnection(connectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"CREATE VIEW {OracleIdentifier.Quote(OracleIdentifier.Normalize(viewName))} AS SELECT ACCOUNTID FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}";
+            _ = await command.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new OracleSchemaManager(connectionString);
+        var current = await schema.ReadTableAsync(table, TestCancellationToken);
+        var plan = SchemaPlanner.Plan(table, current, new SchemaPolicy(), SynchronizationMode.Reload);
+        var error = await Assert.ThrowsAsync<RepliceraException>(() =>
+            schema.ApplySchemaPlanAsync(job, table, plan, TestCancellationToken));
+        Assert.Equal(ErrorCategory.SchemaConflict, error.Category);
+        Assert.Contains(OracleIdentifier.Normalize(viewName), error.Message, StringComparison.OrdinalIgnoreCase);
+    }
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
@@ -169,6 +210,14 @@ public sealed class OracleProviderIntegrationTests
         Assert.NotNull(applied);
         Assert.Equal(400, applied.Columns.Single(column => column.Name == "NAME").MaxLength);
         Assert.Contains(applied.Columns, column => column.Name == "DESCRIPTION" && column.IsNullable);
+
+        var contracted = AccountsTable(initial.DestinationName, 400);
+        var dropPlan = SchemaPlanner.Plan(contracted, applied, new SchemaPolicy());
+        Assert.Contains(dropPlan.Changes, change => change.Kind == SchemaChangeKind.DropColumn);
+        await schema.ApplySchemaPlanAsync(job, contracted, dropPlan, TestCancellationToken);
+        var contractedDestination = await schema.ReadTableAsync(contracted, TestCancellationToken);
+        Assert.NotNull(contractedDestination);
+        Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "DESCRIPTION");
     }
 
     [Fact]
@@ -299,7 +348,7 @@ public sealed class OracleProviderIntegrationTests
             new() { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = nameLength },
             new() { LogicalName = "statuscode", SourceType = SourceType.Choice, IsNullable = true }
         }.Concat(includeDescription
-            ? [new ColumnDefinition { LogicalName = "description", SourceType = SourceType.String, IsNullable = true, MaxLength = 1000 }]
+            ? [new ColumnDefinition { LogicalName = "description", SourceType = SourceType.String, IsNullable = false, MaxLength = 1000 }]
             : []));
 
     private static TableDefinition FidelityTable(string destinationName) => new(

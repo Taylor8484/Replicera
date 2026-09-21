@@ -1,4 +1,5 @@
 using Replicera.Core.Models;
+using Replicera.Core.Schema;
 
 namespace Replicera.Provider.PostgreSql;
 
@@ -22,7 +23,11 @@ public static class PostgreSqlDmlBuilder
         return string.Join(Environment.NewLine, statements);
     }
 
-    public static string BuildApplyStaging(TableDefinition table, string stagingTable, string schema = "public")
+    public static string BuildApplyStaging(
+        TableDefinition table,
+        string stagingTable,
+        string schema = "public",
+        bool retainDeletedRows = false)
     {
         ArgumentNullException.ThrowIfNull(table);
         var columns = PostgreSqlTableLayout.GetColumns(table);
@@ -34,21 +39,38 @@ public static class PostgreSqlDmlBuilder
         var operation = PostgreSqlIdentifier.Quote(OperationColumn);
         var columnList = string.Join(", ", columns.Select(column => PostgreSqlIdentifier.Quote(column.Name)));
         var sourceList = string.Join(", ", columns.Select(column => $"source.{PostgreSqlIdentifier.Quote(column.Name)}"));
-        var conflictAction = mutable.Length == 0
-            ? "DO NOTHING"
-            : "DO UPDATE SET " + string.Join(", ", mutable.Select(column =>
-                $"{PostgreSqlIdentifier.Quote(column.Name)} = EXCLUDED.{PostgreSqlIdentifier.Quote(column.Name)}"));
+        var updates = mutable.Select(column =>
+                $"{PostgreSqlIdentifier.Quote(column.Name)} = EXCLUDED.{PostgreSqlIdentifier.Quote(column.Name)}")
+            .Append($"{PostgreSqlIdentifier.Quote(ManagedColumnNames.DataLoadDate)} = CURRENT_TIMESTAMP")
+            .Concat(retainDeletedRows
+                ? [$"{PostgreSqlIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)} = NULL"]
+                : []);
+        var insertColumns = $"{columnList}, {PostgreSqlIdentifier.Quote(ManagedColumnNames.DataLoadDate)}"
+            + (retainDeletedRows ? $", {PostgreSqlIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)}" : string.Empty);
+        var insertValues = $"{sourceList}, CURRENT_TIMESTAMP" + (retainDeletedRows ? ", NULL" : string.Empty);
+        var deletion = retainDeletedRows
+            ? $"""
+              UPDATE {target} AS target
+              SET {PostgreSqlIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)} =
+                  COALESCE(target.{PostgreSqlIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)}, CURRENT_TIMESTAMP)
+              FROM {staging} AS source
+              WHERE source.{operation} = 'D'
+                AND target.{key} = source.{key};
+              """
+            : $"""
+              DELETE FROM {target} AS target
+              USING {staging} AS source
+              WHERE source.{operation} = 'D'
+                AND target.{key} = source.{key};
+              """;
         return $"""
-            INSERT INTO {target} ({columnList})
-            SELECT {sourceList}
+            INSERT INTO {target} ({insertColumns})
+            SELECT {insertValues}
             FROM {staging} AS source
             WHERE source.{operation} = 'U'
-            ON CONFLICT ({key}) {conflictAction};
+            ON CONFLICT ({key}) DO UPDATE SET {string.Join(", ", updates)};
 
-            DELETE FROM {target} AS target
-            USING {staging} AS source
-            WHERE source.{operation} = 'D'
-              AND target.{key} = source.{key};
+            {deletion}
             """;
     }
 

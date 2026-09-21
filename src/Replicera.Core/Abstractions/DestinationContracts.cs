@@ -1,3 +1,4 @@
+using Replicera.Core.Configuration;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
 
@@ -17,6 +18,12 @@ public interface IDestinationProvider
 
     IReplicationStateStore CreateStateStore(string connectionString);
 
+    Task<IAsyncDisposable> AcquireTableLockAsync(
+        string connectionString,
+        string jobName,
+        string logicalName,
+        CancellationToken cancellationToken);
+
     Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken);
 }
 
@@ -34,6 +41,12 @@ public interface IDestinationSchemaManager
         TableDefinition source,
         SchemaPlan plan,
         CancellationToken cancellationToken);
+
+    Task<bool> ReconcileMissingTableAsync(
+        string jobName,
+        string logicalName,
+        SynchronizationMode mode,
+        CancellationToken cancellationToken);
 }
 
 public interface IReplicationSession : IAsyncDisposable
@@ -50,13 +63,20 @@ public interface IDestinationWriter
     Task<IReplicationSession> BeginInitialSyncAsync(
         string jobName,
         TableDefinition table,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        bool replaceExisting = true,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false);
 
     Task<IReplicationSession> BeginIncrementalSyncAsync(
         string jobName,
         TableDefinition table,
         string currentCheckpoint,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false);
 }
 
 public interface IReplicationStateStore
@@ -88,4 +108,5 @@ public sealed record TableReplicationState(
     long? LastRunRecordsUpdated = null,
     long? LastRunRecordsDeleted = null,
     string? LastErrorCode = null,
-    string? LastErrorMessage = null);
+    string? LastErrorMessage = null,
+    string? LastSyncMode = null);

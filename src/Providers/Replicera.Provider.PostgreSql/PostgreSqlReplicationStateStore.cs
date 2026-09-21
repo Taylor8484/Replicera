@@ -26,7 +26,7 @@ public sealed class PostgreSqlReplicationStateStore(string connectionString) : I
             SELECT t.status, t.change_checkpoint, t.last_successful_sync_utc,
                    latest.sync_type, latest.started_utc, latest.completed_utc,
                    latest.records_inserted, latest.records_updated, latest.records_deleted,
-                   latest.error_code, latest.error_message
+                   latest.error_code, latest.error_message, t.last_sync_mode
             FROM replicera.tables AS t
             LEFT JOIN LATERAL
             (
@@ -64,7 +64,8 @@ public sealed class PostgreSqlReplicationStateStore(string connectionString) : I
             reader.IsDBNull(7) ? null : reader.GetInt64(7),
             reader.IsDBNull(8) ? null : reader.GetInt64(8),
             reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.IsDBNull(10) ? null : reader.GetString(10));
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : reader.GetString(11));
     }
 
     public async Task MarkFailureAsync(

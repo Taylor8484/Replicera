@@ -25,7 +25,7 @@ public sealed class OracleReplicationStateStore(string connectionString) : IRepl
                    SYS_EXTRACT_UTC(target.LAST_SUCCESSFUL_SYNC_UTC),
                    latest.SYNC_TYPE, SYS_EXTRACT_UTC(latest.STARTED_UTC), SYS_EXTRACT_UTC(latest.COMPLETED_UTC),
                    latest.RECORDS_INSERTED, latest.RECORDS_UPDATED, latest.RECORDS_DELETED,
-                   latest.ERROR_CODE, latest.ERROR_MESSAGE
+                   latest.ERROR_CODE, latest.ERROR_MESSAGE, target.LAST_SYNC_MODE
             FROM REPLICERA_TABLES target
             OUTER APPLY
             (
@@ -63,7 +63,8 @@ public sealed class OracleReplicationStateStore(string connectionString) : IRepl
             reader.IsDBNull(7) ? null : Convert.ToInt64(reader.GetDecimal(7), System.Globalization.CultureInfo.InvariantCulture),
             reader.IsDBNull(8) ? null : Convert.ToInt64(reader.GetDecimal(8), System.Globalization.CultureInfo.InvariantCulture),
             reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.IsDBNull(10) ? null : reader.GetString(10));
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : reader.GetString(11));
     }
 
     public async Task MarkFailureAsync(

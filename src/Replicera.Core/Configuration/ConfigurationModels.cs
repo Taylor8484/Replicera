@@ -63,9 +63,18 @@ public sealed record JobConfiguration
 
 public sealed record SyncPolicy
 {
+    public SynchronizationMode Mode { get; init; } = SynchronizationMode.Complete;
+
     public bool EnableChangeTracking { get; init; } = true;
 
     public int BatchSize { get; init; } = 5_000;
+}
+
+public enum SynchronizationMode
+{
+    Complete,
+    NoDataLoss,
+    Reload
 }
 
 public enum SchemaAction
@@ -77,13 +86,16 @@ public enum SchemaAction
 
 public sealed record SchemaPolicy
 {
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> ColumnRenames { get; init; } =
+        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
     public SchemaAction CreateTables { get; init; } = SchemaAction.Automatic;
 
     public SchemaAction AddColumns { get; init; } = SchemaAction.Automatic;
 
     public SchemaAction ExpandCompatibleColumns { get; init; } = SchemaAction.Automatic;
 
-    public SchemaAction DropColumns { get; init; } = SchemaAction.Manual;
+    public SchemaAction DropColumns { get; init; } = SchemaAction.Automatic;
 
     public SchemaAction DropTables { get; init; } = SchemaAction.Manual;
 

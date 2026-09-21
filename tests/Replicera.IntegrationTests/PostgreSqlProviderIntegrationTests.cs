@@ -2,6 +2,7 @@ using System.Text.Json;
 using Npgsql;
 using Replicera.Cli;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
 using Replicera.Provider.PostgreSql;
@@ -12,6 +13,41 @@ public sealed class PostgreSqlProviderIntegrationTests
 {
     private const string ConnectionEnvironmentVariable = "REPLICERA_POSTGRES_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var provider = new PostgreSqlProvider();
+        await using (var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken));
+        }
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = new NpgsqlCommand("CREATE VIEW public.account_view AS SELECT accountid FROM public.account;", connection);
+            _ = await command.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var current = await schema.ReadTableAsync(table, TestCancellationToken);
+        var plan = SchemaPlanner.Plan(table, current, new SchemaPolicy(), SynchronizationMode.Reload);
+        var error = await Assert.ThrowsAsync<RepliceraException>(() =>
+            schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken));
+        Assert.Equal(ErrorCategory.SchemaConflict, error.Category);
+        Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -222,6 +258,14 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.NotNull(applied);
         Assert.Equal(400, applied.Columns.Single(column => column.Name == "name").MaxLength);
         Assert.Contains(applied.Columns, column => column.Name == "description" && column.IsNullable);
+
+        var contracted = AccountsTable(400);
+        var dropPlan = SchemaPlanner.Plan(contracted, applied, new SchemaPolicy());
+        Assert.Contains(dropPlan.Changes, change => change.Kind == SchemaChangeKind.DropColumn);
+        await schema.ApplySchemaPlanAsync("integration", contracted, dropPlan, TestCancellationToken);
+        var contractedDestination = await schema.ReadTableAsync(contracted, TestCancellationToken);
+        Assert.NotNull(contractedDestination);
+        Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "description");
     }
 
     [Fact]
@@ -336,7 +380,7 @@ public sealed class PostgreSqlProviderIntegrationTests
             new() { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = nameLength },
             new() { LogicalName = "statuscode", SourceType = SourceType.Choice, IsNullable = true }
         }.Concat(includeDescription
-            ? [new ColumnDefinition { LogicalName = "description", SourceType = SourceType.String, IsNullable = true, MaxLength = 1000 }]
+            ? [new ColumnDefinition { LogicalName = "description", SourceType = SourceType.String, IsNullable = false, MaxLength = 1000 }]
             : []));
 
     private static TableDefinition FidelityTable() => new(

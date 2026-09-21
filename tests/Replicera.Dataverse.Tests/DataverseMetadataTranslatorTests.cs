@@ -36,6 +36,23 @@ public sealed class DataverseMetadataTranslatorTests
         Assert.Contains("not supported", column.UnsupportedReason, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(AttributeTypeCode.CalendarRules)]
+    [InlineData(AttributeTypeCode.EntityName)]
+    [InlineData(AttributeTypeCode.ManagedProperty)]
+    [InlineData(AttributeTypeCode.PartyList)]
+    [InlineData(AttributeTypeCode.Virtual)]
+    public void TranslateColumn_MarksUnmappedDeclaredTypesUnsupported(AttributeTypeCode attributeType)
+    {
+        var attribute = new AttributeMetadata { LogicalName = "unsupported" };
+        SetMetadataProperty(attribute, nameof(AttributeMetadata.AttributeType), attributeType);
+
+        var column = DataverseMetadataTranslator.TranslateColumn(attribute, "accountid");
+
+        Assert.False(column.IsSupported);
+        Assert.Contains(attributeType.ToString(), column.UnsupportedReason, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void TranslateColumn_MarksDerivedChildAttributeUnsupported()
     {

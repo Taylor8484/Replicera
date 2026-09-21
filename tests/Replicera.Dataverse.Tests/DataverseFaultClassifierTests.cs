@@ -55,5 +55,22 @@ public sealed class DataverseFaultClassifierTests
         Assert.DoesNotContain("opaque-checkpoint", checkpointException.ToString(), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(unchecked((int)0x8004F899))]
+    [InlineData(unchecked((int)0x80094005))]
+    [InlineData(unchecked((int)0x8005E00C))]
+    [InlineData(unchecked((int)0x80072493))]
+    public void Classify_MissingEntityOnlyForDirectMetadataLookup(int errorCode)
+    {
+        var request = new RetrieveEntityRequest { LogicalName = "removed_table" };
+
+        Assert.Equal(
+            ErrorCategory.SourceMetadataNotFound,
+            DataverseFaultClassifier.Classify(request, Fault(errorCode)).Category);
+        Assert.Equal(
+            ErrorCategory.SourceConnectivity,
+            DataverseFaultClassifier.Classify(new WhoAmIRequest(), Fault(errorCode)).Category);
+    }
+
     private static OrganizationServiceFault Fault(int errorCode) => new() { ErrorCode = errorCode };
 }

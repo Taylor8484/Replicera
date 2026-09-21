@@ -28,6 +28,17 @@ public sealed class OracleSqlBuilderTests
     }
 
     [Fact]
+    public void BuildApplyStaging_NoDataLossStampsLoadsAndSourceRemovals()
+    {
+        var merge = OracleDmlBuilder.BuildApplyStaging(Table(), "REPLICERA_STAGE_123", retainDeletedRows: true);
+        var removal = OracleDmlBuilder.BuildDeleteStagingChanges(Table(), "REPLICERA_STAGE_123", retainDeletedRows: true);
+
+        Assert.Contains("\"DATA_LOAD_DTE\" = SYSTIMESTAMP", merge, StringComparison.Ordinal);
+        Assert.Contains("\"DATE_SOURCE_REMOVE_DTE\" = NULL", merge, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(target.\"DATE_SOURCE_REMOVE_DTE\", SYSTIMESTAMP)", removal, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildCreateStaging_AllowsSparseDeleteRecords()
     {
         var sql = OracleDmlBuilder.BuildCreateStaging(Table(), "REPLICERA_STAGE_123");

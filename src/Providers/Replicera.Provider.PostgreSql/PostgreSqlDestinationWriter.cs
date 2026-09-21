@@ -3,7 +3,9 @@ using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Configuration;
 using Replicera.Core.Models;
+using Replicera.Core.Schema;
 
 namespace Replicera.Provider.PostgreSql;
 
@@ -12,18 +14,29 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
     public Task<IReplicationSession> BeginInitialSyncAsync(
         string jobName,
         TableDefinition table,
-        CancellationToken cancellationToken) => BeginAsync(jobName, table, "Initial", cancellationToken);
+        CancellationToken cancellationToken,
+        bool replaceExisting = true,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false) => BeginAsync(jobName, table, "Initial", replaceExisting, retainDeletedRows, mode, externalLockHeld, cancellationToken);
 
     public Task<IReplicationSession> BeginIncrementalSyncAsync(
         string jobName,
         TableDefinition table,
         string currentCheckpoint,
-        CancellationToken cancellationToken) => BeginAsync(jobName, table, "Incremental", cancellationToken);
+        CancellationToken cancellationToken,
+        bool retainDeletedRows = false,
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        bool externalLockHeld = false) => BeginAsync(jobName, table, "Incremental", false, retainDeletedRows, mode, externalLockHeld, cancellationToken);
 
     private async Task<IReplicationSession> BeginAsync(
         string jobName,
         TableDefinition table,
         string syncType,
+        bool replaceExisting,
+        bool retainDeletedRows,
+        SynchronizationMode mode,
+        bool externalLockHeld,
         CancellationToken cancellationToken)
     {
         var connection = new NpgsqlConnection(connectionString);
@@ -33,12 +46,15 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             var tableId = await EnsureManagedTableAsync(connection, jobName, table, cancellationToken).ConfigureAwait(false);
             transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
-            await AcquireLockAsync(connection, transaction, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
+            if (!externalLockHeld)
+            {
+                await AcquireLockAsync(connection, transaction, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
+            }
             var runId = Guid.NewGuid();
             await CreateRunMetadataAsync(connection, transaction, runId, tableId, jobName, syncType, cancellationToken).ConfigureAwait(false);
             var stagingName = PostgreSqlIdentifier.Normalize($"replicera_stage_{runId:N}");
             await ExecuteAsync(connection, transaction, PostgreSqlDmlBuilder.BuildCreateStaging(table, stagingName), cancellationToken).ConfigureAwait(false);
-            if (syncType == "Initial")
+            if (replaceExisting)
             {
                 await ExecuteAsync(
                     connection,
@@ -46,8 +62,16 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
                     $"DELETE FROM {PostgreSqlIdentifier.Qualified("public", table.DestinationName)};",
                     cancellationToken).ConfigureAwait(false);
             }
+            else if (syncType == "Initial" && retainDeletedRows)
+            {
+                await ExecuteAsync(
+                    connection,
+                    transaction,
+                    $"UPDATE {PostgreSqlIdentifier.Qualified("public", table.DestinationName)} SET {PostgreSqlIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)} = COALESCE({PostgreSqlIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)}, CURRENT_TIMESTAMP);",
+                    cancellationToken).ConfigureAwait(false);
+            }
 
-            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType);
+            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode);
         }
         catch
         {
@@ -164,7 +188,9 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
         Guid tableId,
         TableDefinition table,
         string stagingName,
-        string syncType) : IReplicationSession
+        string syncType,
+        bool retainDeletedRows,
+        SynchronizationMode mode) : IReplicationSession
     {
         private bool committed;
 
@@ -178,7 +204,7 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
 
             await CopyPageAsync(page, cancellationToken).ConfigureAwait(false);
             var result = await CountOperationsAsync(cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, PostgreSqlDmlBuilder.BuildApplyStaging(table, stagingName), cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, PostgreSqlDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows: retainDeletedRows), cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, PostgreSqlDmlBuilder.BuildTruncateStaging(stagingName), cancellationToken).ConfigureAwait(false);
             return result;
         }
@@ -194,6 +220,7 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
                     last_successful_sync_utc = CURRENT_TIMESTAMP,
                     last_incremental_sync_utc = CASE WHEN @sync_type = 'Incremental' THEN CURRENT_TIMESTAMP ELSE last_incremental_sync_utc END,
                     last_full_sync_utc = CASE WHEN @sync_type = 'Initial' THEN CURRENT_TIMESTAMP ELSE last_full_sync_utc END,
+                    last_sync_mode = @sync_mode,
                     status = 'Healthy'
                 WHERE table_id = @table_id;
 
@@ -207,6 +234,7 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
             command.Parameters.AddWithValue("table_id", tableId);
             command.Parameters.AddWithValue("run_id", runId);
             command.Parameters.AddWithValue("sync_type", syncType);
+            command.Parameters.AddWithValue("sync_mode", mode.ToString());
             command.Parameters.AddWithValue("received", metrics.RecordsReceived);
             command.Parameters.AddWithValue("inserted", metrics.RecordsInserted);
             command.Parameters.AddWithValue("updated", metrics.RecordsUpdated);
