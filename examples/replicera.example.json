@@ -31,6 +31,11 @@
         "enableChangeTracking": true,
         "batchSize": 5000
       },
+      "schedule": {
+        "enabled": true,
+        "interval": "00:05:00",
+        "runOnStart": true
+      },
       "schema": {
         "columnRenames": {},
         "createTables": "automatic",

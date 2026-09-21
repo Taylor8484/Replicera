@@ -63,6 +63,9 @@ public static class CliApplication
                 "destination" when HasSubcommand(arguments, "list") => await ListDestinationsAsync(configPath, output, cancellationToken).ConfigureAwait(false),
                 "job" when HasSubcommand(arguments, "add") => await AddJobAsync(arguments, configPath, input, output, cancellationToken).ConfigureAwait(false),
                 "job" when HasSubcommand(arguments, "list") => await ListJobsAsync(configPath, output, cancellationToken).ConfigureAwait(false),
+                "schedule" when HasSubcommand(arguments, "set") => await SetScheduleAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
+                "schedule" when HasSubcommand(arguments, "show") => await ShowScheduleAsync(arguments, configPath, output, structuredOutput, cancellationToken).ConfigureAwait(false),
+                "schedule" when HasSubcommand(arguments, "disable") => await DisableScheduleAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "add") && arguments.Count > 2 => await AddTableAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "remove") && arguments.Count > 2 => await RemoveTableAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "list") => await ListConfiguredTablesAsync(configPath, output, cancellationToken).ConfigureAwait(false),
@@ -83,6 +86,13 @@ public static class CliApplication
                     structuredOutput,
                     HasFlag(arguments, "--verbose"),
                     HasFlag(arguments, "--log-json"),
+                    cancellationToken).ConfigureAwait(false),
+                "worker" => await RunWorkerAsync(
+                    arguments,
+                    configPath,
+                    output,
+                    error,
+                    structuredOutput,
                     cancellationToken).ConfigureAwait(false),
                 "status" => await RuntimeCommands.StatusAsync(
                     configPath,
@@ -330,6 +340,183 @@ public static class CliApplication
         return (int)ExitCode.Success;
     }
 
+    private static async Task<int> SetScheduleAsync(
+        IReadOnlyList<string> arguments,
+        string path,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+        var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
+        var intervalText = GetOption(arguments, "--interval")
+            ?? throw new RepliceraException(ErrorCategory.Configuration, "Option '--interval' is required.");
+        if (!TimeSpan.TryParse(intervalText, System.Globalization.CultureInfo.InvariantCulture, out var interval))
+        {
+            throw new RepliceraException(
+                ErrorCategory.Configuration,
+                $"Option '--interval' is not a valid duration: '{intervalText}'. Use a value such as '00:05:00'.");
+        }
+
+        var runOnStart = HasFlag(arguments, "--run-on-start");
+        var waitFirst = HasFlag(arguments, "--wait-first");
+        if (runOnStart && waitFirst)
+        {
+            throw new RepliceraException(
+                ErrorCategory.Configuration,
+                "Options '--run-on-start' and '--wait-first' cannot be used together.");
+        }
+
+        var changedJob = selectedJob with
+        {
+            Schedule = new ScheduleConfiguration
+            {
+                Enabled = true,
+                Interval = interval,
+                RunOnStart = !waitFirst
+            }
+        };
+        var updated = ReplaceJob(configuration, selectedJob, changedJob);
+        await ConfigurationFile.SaveAsync(path, updated, cancellationToken).ConfigureAwait(false);
+        await output.WriteLineAsync(
+            $"Scheduled job '{selectedJob.Name}' every {interval:c}; {(changedJob.Schedule.RunOnStart ? "runs on worker start" : "waits before first run")}.").ConfigureAwait(false);
+        return (int)ExitCode.Success;
+    }
+
+    private static async Task<int> ShowScheduleAsync(
+        IReadOnlyList<string> arguments,
+        string path,
+        TextWriter output,
+        bool structuredOutput,
+        CancellationToken cancellationToken)
+    {
+        var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+        var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
+        var schedule = selectedJob.Schedule
+            ?? throw new RepliceraException(ErrorCategory.Configuration, $"Job '{selectedJob.Name}' has no schedule configured.");
+        if (structuredOutput)
+        {
+            await output.WriteLineAsync(System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    job = selectedJob.Name,
+                    schedule.Enabled,
+                    schedule.Interval,
+                    schedule.RunOnStart
+                },
+                CliJsonOptions)).ConfigureAwait(false);
+        }
+        else
+        {
+            await output.WriteLineAsync($"Job: {selectedJob.Name}").ConfigureAwait(false);
+            await output.WriteLineAsync($"Enabled: {schedule.Enabled}").ConfigureAwait(false);
+            await output.WriteLineAsync($"Interval: {schedule.Interval:c}").ConfigureAwait(false);
+            await output.WriteLineAsync($"Run on start: {schedule.RunOnStart}").ConfigureAwait(false);
+        }
+
+        return (int)ExitCode.Success;
+    }
+
+    private static async Task<int> DisableScheduleAsync(
+        IReadOnlyList<string> arguments,
+        string path,
+        TextWriter output,
+        CancellationToken cancellationToken)
+    {
+        var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+        var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
+        var schedule = selectedJob.Schedule
+            ?? throw new RepliceraException(ErrorCategory.Configuration, $"Job '{selectedJob.Name}' has no schedule configured.");
+        var changedJob = selectedJob with { Schedule = schedule with { Enabled = false } };
+        var updated = ReplaceJob(configuration, selectedJob, changedJob);
+        await ConfigurationFile.SaveAsync(path, updated, cancellationToken).ConfigureAwait(false);
+        await output.WriteLineAsync($"Disabled schedule for job '{selectedJob.Name}'.").ConfigureAwait(false);
+        return (int)ExitCode.Success;
+    }
+
+    private static async Task<int> RunWorkerAsync(
+        IReadOnlyList<string> arguments,
+        string path,
+        TextWriter output,
+        TextWriter error,
+        bool structuredOutput,
+        CancellationToken cancellationToken)
+    {
+        var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+        var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
+        var schedule = selectedJob.Schedule
+            ?? throw new RepliceraException(ErrorCategory.Configuration, $"Job '{selectedJob.Name}' has no schedule configured.");
+        return await ScheduledWorker.RunAsync(
+            selectedJob.Name,
+            schedule,
+            token => ExecuteScheduledSyncAsync(
+                path,
+                selectedJob.Name,
+                output,
+                error,
+                structuredOutput,
+                HasFlag(arguments, "--verbose"),
+                HasFlag(arguments, "--log-json"),
+                token),
+            output,
+            structuredOutput,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> ExecuteScheduledSyncAsync(
+        string path,
+        string jobName,
+        TextWriter output,
+        TextWriter error,
+        bool structuredOutput,
+        bool verbose,
+        bool structuredDiagnostics,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await RuntimeCommands.SyncAsync(
+                path,
+                jobName,
+                null,
+                false,
+                output,
+                error,
+                structuredOutput,
+                verbose,
+                structuredDiagnostics,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (RepliceraException exception)
+        {
+            await error.WriteLineAsync($"error: {exception.Message}").ConfigureAwait(false);
+            return (int)ExitCodeMapper.From(exception.Category);
+        }
+        catch (DataverseConnectionException)
+        {
+            await error.WriteLineAsync("error: Dataverse authentication or connection failed.").ConfigureAwait(false);
+            return (int)ExitCode.AuthenticationOrAuthorization;
+        }
+        catch (DataverseOperationException)
+        {
+            await error.WriteLineAsync("error: Dataverse operation failed.").ConfigureAwait(false);
+            return (int)ExitCode.SourceConnectivity;
+        }
+        catch (SqlException exception)
+        {
+            await error.WriteLineAsync($"error: SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
+            return (int)ExitCode.DestinationConnectivity;
+        }
+        catch (Exception)
+        {
+            await error.WriteLineAsync("error: unexpected internal failure.").ConfigureAwait(false);
+            return (int)ExitCode.Unexpected;
+        }
+    }
+
     private static Task<int> AddTableAsync(
         IReadOnlyList<string> arguments,
         string path,
@@ -520,6 +707,14 @@ public static class CliApplication
             ?? throw new RepliceraException(ErrorCategory.Configuration, $"Unknown job '{jobName}'.");
     }
 
+    private static RepliceraConfiguration ReplaceJob(
+        RepliceraConfiguration configuration,
+        JobConfiguration selectedJob,
+        JobConfiguration changedJob) => configuration with
+        {
+            Jobs = configuration.Jobs.Select(job => ReferenceEquals(job, selectedJob) ? changedJob : job).ToArray()
+        };
+
     private const string HelpText = """
         Replicera - mirror Microsoft Dataverse tables to relational databases
 
@@ -532,15 +727,22 @@ public static class CliApplication
           replicera destination list [--config <path>]
           replicera job add [--interactive] --name <name> --source <source> --destination <destination> --table <table> [--table <table>] [--batch-size <count>] [--mode complete|no-data-loss|reload] [--config <path>]
           replicera job list [--config <path>]
+          replicera schedule set [--job <name>] --interval <hh:mm:ss> [--run-on-start|--wait-first] [--config <path>]
+          replicera schedule show [--job <name>] [--json] [--config <path>]
+          replicera schedule disable [--job <name>] [--config <path>]
           replicera tables list [--config <path>]
           replicera tables add <table> [--job <name>] [--config <path>]
           replicera tables remove <table> [--job <name>] [--config <path>]
           replicera inspect <table> [--job <name>] [--json] [--config <path>]
           replicera sync [--job <name>] [--table <table>] [--full] [--json] [--verbose] [--log-json] [--config <path>]
+          replicera worker [--job <name>] [--json] [--verbose] [--log-json] [--config <path>]
           replicera status [--job <name>] [--json] [--config <path>]
         """;
 
     private static string ProductVersion =>
         typeof(CliApplication).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion.Split('+', 2)[0] ?? "unknown";
+
+    private static readonly System.Text.Json.JsonSerializerOptions CliJsonOptions =
+        new(System.Text.Json.JsonSerializerDefaults.Web);
 }

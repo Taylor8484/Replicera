@@ -59,6 +59,17 @@ public sealed record JobConfiguration
     public SyncPolicy Sync { get; init; } = new();
 
     public SchemaPolicy Schema { get; init; } = new();
+
+    public ScheduleConfiguration? Schedule { get; init; }
+}
+
+public sealed record ScheduleConfiguration
+{
+    public bool Enabled { get; init; } = true;
+
+    public TimeSpan Interval { get; init; } = TimeSpan.FromMinutes(5);
+
+    public bool RunOnStart { get; init; } = true;
 }
 
 public sealed record SyncPolicy

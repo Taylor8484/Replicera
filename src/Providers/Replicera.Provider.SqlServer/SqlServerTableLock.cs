@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using Replicera.Core.Errors;
 
 namespace Replicera.Provider.SqlServer;
 
@@ -29,7 +30,7 @@ internal sealed class SqlServerTableLock(SqlConnection connection, string resour
             var result = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
             if (result < 0)
             {
-                throw new InvalidOperationException($"A synchronization is already running for job '{jobName}', table '{logicalName}'.");
+                throw new SynchronizationAlreadyRunningException(jobName, logicalName);
             }
 
             return new SqlServerTableLock(connection, resource);

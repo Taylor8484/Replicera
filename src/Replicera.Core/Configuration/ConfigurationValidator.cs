@@ -71,6 +71,14 @@ public static class ConfigurationValidator
                 issues.Add(new($"{path}.sync.batchSize", "Batch size must be between 1 and 5000."));
             }
 
+            if (job.Schedule is not null &&
+                (job.Schedule.Interval < TimeSpan.FromSeconds(1) || job.Schedule.Interval > TimeSpan.FromDays(7)))
+            {
+                issues.Add(new(
+                    $"{path}.schedule.interval",
+                    "Schedule interval must be between one second and seven days."));
+            }
+
             ValidateColumnRenames(job, path, issues);
         }
 

@@ -16,7 +16,7 @@ public enum ErrorCategory
     Synchronization,
     Unexpected
 }
-public sealed class RepliceraException : Exception
+public class RepliceraException : Exception
 {
     public RepliceraException(ErrorCategory category, string message, Exception? innerException = null)
         : base(message, innerException)
@@ -25,6 +25,16 @@ public sealed class RepliceraException : Exception
     }
 
     public ErrorCategory Category { get; }
+}
+
+public sealed class SynchronizationAlreadyRunningException : RepliceraException
+{
+    public SynchronizationAlreadyRunningException(string jobName, string logicalName)
+        : base(
+            ErrorCategory.Synchronization,
+            $"A synchronization is already running for job '{jobName}', table '{logicalName}'.")
+    {
+    }
 }
 
 public enum ExitCode

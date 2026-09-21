@@ -52,6 +52,28 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(issues, issue => issue.Path == "jobs[0].sync.batchSize");
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(604801)]
+    public void Validate_RejectsScheduleIntervalsOutsideSupportedRange(int seconds)
+    {
+        var valid = ValidConfiguration();
+        var configuration = valid with
+        {
+            Jobs =
+            [
+                valid.Jobs[0] with
+                {
+                    Schedule = new ScheduleConfiguration { Interval = TimeSpan.FromSeconds(seconds) }
+                }
+            ]
+        };
+
+        var issues = ConfigurationValidator.Validate(configuration);
+
+        Assert.Contains(issues, issue => issue.Path == "jobs[0].schedule.interval");
+    }
+
     [Fact]
     public void Validate_TreatsNamesAsCaseInsensitive()
     {

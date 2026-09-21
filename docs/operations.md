@@ -70,6 +70,28 @@ Run one process per scheduled invocation. Replicera uses a database application 
 
 Each scheduled invocation retrieves published Dataverse metadata, then processes configured tables in order. For each table, Replicera acquires its lock, reconciles schema, performs the required incremental or full read, commits destination rows and the checkpoint, releases the lock, and moves to the next table. Tables committed before a later failure remain committed; the failing table retains its last safe checkpoint or is marked for full resynchronization, and subsequent tables wait for the next invocation. Configure the scheduler not to start a new instance while the previous invocation is still running. The per-table lock preserves safety if overlap occurs, but it does not serialize an entire multi-table job as one unit.
 
+### Portable foreground worker
+
+Replicera can own the interval schedule while remaining a portable foreground application. Configure a job and start its worker:
+
+```sh
+replicera schedule set --job production --interval 00:05:00 --run-on-start
+replicera schedule show --job production
+replicera worker --job production --log-json
+```
+
+Use `--wait-first` instead of `--run-on-start` when the worker should wait one interval before its first synchronization. The interval must be between one second and seven days. It begins after each synchronization attempt completes, so a long run never overlaps itself and missed intervals do not accumulate. A failed attempt is reported and the worker tries again after the next interval. Configuration is loaded when the worker starts; restart it after changing the job or schedule.
+
+The first worker version runs one job per process and must remain open. Press Ctrl+C to cancel an active synchronization through the normal checkpoint-safe cancellation path and stop the worker. Manual `replicera sync` remains available while a worker exists. Destination table locks prevent the two processes from mutating the same job/table simultaneously; a collision is reported as a synchronization failure and the worker tries again on its next interval.
+
+Disable future worker starts without affecting manual synchronization:
+
+```sh
+replicera schedule disable --job production
+```
+
+The worker never initiates `--full` automatically. If status reports `ResyncRequired`, stop or leave the worker running, perform the controlled manual recovery described below, and then allow the next scheduled incremental run to proceed.
+
 ## Recovery and Resynchronization
 
 Destination changes, run metrics, and the new checkpoint commit in one database transaction. Cancellation or failure rolls back row changes and retains the last successful checkpoint. Correct the reported cause and rerun the same command; incremental replay is idempotent.

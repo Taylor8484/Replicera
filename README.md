@@ -73,6 +73,8 @@ replicera destination add --name development-oracle --provider oracle \
   --connection-env REPLICERA_ORACLE_CONNECTION_STRING
 replicera job add --name development --source development-dataverse --destination development-sql --table account --mode complete
 replicera tables add contact --job development
+replicera schedule set --job development --interval 00:05:00 --run-on-start
+replicera worker --job development
 ```
 
 The `--secret-env` and `--connection-env` arguments are environment-variable names. A job must already exist in the configuration before using `tables add`.
@@ -86,6 +88,8 @@ Reload mode is intentionally destructive and is intended for development or smal
 Use `sync --full --table <name>` to force a full source read. In `complete` mode it performs a controlled replacement; in `noDataLoss` mode it performs a non-destructive full merge. The existing destination data and checkpoint remain recoverable if the transaction fails.
 Use `--json` with `inspect`, `sync`, or `status` for machine-readable results. `sync --verbose` writes replication progress to standard error; `sync --log-json` writes the same diagnostics as JSON Lines for central logging.
 `status` reports each table's state, last successful sync, latest run type/time, row counts, and sanitized failure details.
+
+For portable automatic synchronization, configure an interval with `schedule set` and leave `replicera worker --job <job>` running. The worker runs one job at a time, waits for the configured interval after each completed attempt, and continues after failed attempts. Press Ctrl+C for a graceful stop. The existing `sync` command remains available for manual runs whether the schedule is enabled or disabled. See the operations guide for the full worker lifecycle and limitations. Multi-job hosting, calendar schedules, containers, and native services are tracked in the [scheduling roadmap](docs/scheduling-roadmap.md).
 
 See `THIRD-PARTY-NOTICES.md` before distributing binaries.
 See [`docs/operations.md`](docs/operations.md) for privileges, deployment, recovery, resynchronization, and troubleshooting.

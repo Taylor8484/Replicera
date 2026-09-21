@@ -1,4 +1,5 @@
 using Npgsql;
+using Replicera.Core.Errors;
 
 namespace Replicera.Provider.PostgreSql;
 
@@ -22,7 +23,7 @@ internal sealed class PostgreSqlTableLock(NpgsqlConnection connection, string re
             var acquired = (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
             if (!acquired)
             {
-                throw new InvalidOperationException($"A synchronization is already running for job '{jobName}', table '{logicalName}'.");
+                throw new SynchronizationAlreadyRunningException(jobName, logicalName);
             }
 
             return new PostgreSqlTableLock(connection, resource);

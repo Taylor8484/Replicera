@@ -32,7 +32,7 @@ public sealed class SqlServerProviderIntegrationTests
         var provider = new SqlServerProvider();
         await using (var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken))
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Assert.ThrowsAsync<Replicera.Core.Errors.SynchronizationAlreadyRunningException>(async () =>
                 await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken));
         }
 

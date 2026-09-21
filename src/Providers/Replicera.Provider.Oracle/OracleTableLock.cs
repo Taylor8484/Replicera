@@ -1,5 +1,6 @@
 using System.Data;
 using Oracle.ManagedDataAccess.Client;
+using Replicera.Core.Errors;
 
 namespace Replicera.Provider.Oracle;
 
@@ -26,7 +27,7 @@ internal sealed class OracleTableLock(OracleConnection connection, int lockId) :
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (Convert.ToInt32(result.Value, System.Globalization.CultureInfo.InvariantCulture) != 0)
             {
-                throw new InvalidOperationException($"A synchronization is already running for job '{jobName}', table '{logicalName}'.");
+                throw new SynchronizationAlreadyRunningException(jobName, logicalName);
             }
 
             return new OracleTableLock(connection, lockId);
@@ -45,8 +46,8 @@ internal sealed class OracleTableLock(OracleConnection connection, int lockId) :
     {
         await using var command = connection.CreateCommand();
         command.BindByName = true;
-        command.CommandText = "SELECT DBMS_UTILITY.GET_HASH_VALUE(:resource, 0, 1073741823) FROM DUAL";
-        command.Parameters.Add("resource", OracleDbType.NVarchar2).Value = resource;
+        command.CommandText = "SELECT DBMS_UTILITY.GET_HASH_VALUE(:p_lock_name, 0, 1073741823) FROM DUAL";
+        command.Parameters.Add("p_lock_name", OracleDbType.NVarchar2).Value = resource;
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
     }
 

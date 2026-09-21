@@ -29,7 +29,7 @@ public sealed class OracleProviderIntegrationTests
         var provider = new OracleProvider();
         await using (var tableLock = await provider.AcquireTableLockAsync(connectionString, job, "account", TestCancellationToken))
         {
-            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Assert.ThrowsAsync<Replicera.Core.Errors.SynchronizationAlreadyRunningException>(async () =>
                 await provider.AcquireTableLockAsync(connectionString, job, "account", TestCancellationToken));
         }
 
