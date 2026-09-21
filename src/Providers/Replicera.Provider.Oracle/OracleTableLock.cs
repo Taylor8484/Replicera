@@ -1,5 +1,6 @@
 using System.Data;
 using Oracle.ManagedDataAccess.Client;
+using Oracle.ManagedDataAccess.Types;
 using Replicera.Core.Errors;
 
 namespace Replicera.Provider.Oracle;
@@ -25,7 +26,10 @@ internal sealed class OracleTableLock(OracleConnection connection, int lockId) :
             result.Direction = ParameterDirection.Output;
             command.Parameters.Add("lock_id", OracleDbType.Int32).Value = lockId;
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            if (Convert.ToInt32(result.Value, System.Globalization.CultureInfo.InvariantCulture) != 0)
+            var resultCode = result.Value is OracleDecimal oracleResult
+                ? oracleResult.ToInt32()
+                : Convert.ToInt32(result.Value, System.Globalization.CultureInfo.InvariantCulture);
+            if (resultCode != 0)
             {
                 throw new SynchronizationAlreadyRunningException(jobName, logicalName);
             }
