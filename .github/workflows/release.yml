@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            runtime: linux-x64
+            executable: replicera
+          - os: windows-latest
+            runtime: win-x64
+            executable: replicera.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Derive version
+        id: version
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG_NAME.TrimStart('v')
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Package release
+        run: python scripts/package_release.py --version ${{ steps.version.outputs.version }} --runtime ${{ matrix.runtime }}
+      - name: Select archive
+        id: archive
+        shell: pwsh
+        run: |
+          $extension = if ('${{ matrix.runtime }}'.StartsWith('win-')) { 'zip' } else { 'tar.gz' }
+          "path=artifacts/packages/replicera-${{ steps.version.outputs.version }}-${{ matrix.runtime }}.$extension" >> $env:GITHUB_OUTPUT
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          if ('${{ matrix.runtime }}'.StartsWith('win-')) {
+            Expand-Archive '${{ steps.archive.outputs.path }}' -DestinationPath artifacts/extracted
+          } else {
+            tar -xzf '${{ steps.archive.outputs.path }}' -C artifacts/extracted
+          }
+          & (Join-Path "artifacts/extracted/replicera-${{ steps.version.outputs.version }}-${{ matrix.runtime }}" "${{ matrix.executable }}") --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.runtime }}
+          path: artifacts/packages/*
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: release-files
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "${GITHUB_REF_NAME}" release-files/* --verify-tag --generate-notes

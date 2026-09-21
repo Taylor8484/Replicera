@@ -1,0 +1,41 @@
+{
+  "sources": [
+    {
+      "name": "development-dataverse",
+      "url": "https://example.crm.dynamics.com",
+      "tenantId": "00000000-0000-0000-0000-000000000001",
+      "clientId": "00000000-0000-0000-0000-000000000002",
+      "authentication": {
+        "method": "clientSecret",
+        "secretEnvironmentVariable": "REPLICERA_DATAVERSE_CLIENT_SECRET"
+      }
+    }
+  ],
+  "destinations": [
+    {
+      "name": "development-postgres",
+      "provider": "postgresql",
+      "connectionStringEnvironmentVariable": "REPLICERA_POSTGRES_CONNECTION_STRING"
+    }
+  ],
+  "jobs": [
+    {
+      "name": "development",
+      "source": "development-dataverse",
+      "destination": "development-postgres",
+      "tables": ["account"],
+      "sync": {
+        "enableChangeTracking": true,
+        "batchSize": 5000
+      },
+      "schema": {
+        "createTables": "automatic",
+        "addColumns": "automatic",
+        "expandCompatibleColumns": "automatic",
+        "dropColumns": "manual",
+        "dropTables": "manual",
+        "incompatibleChanges": "stop"
+      }
+    }
+  ]
+}

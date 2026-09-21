@@ -1,0 +1,24 @@
+**/bin/
+**/obj/
+.vs/
+.vscode/
+.idea/
+TestResults/
+coverage/
+artifacts/
+__pycache__/
+*.user
+*.suo
+*.nupkg
+*.snupkg
+replicera.local.json
+.env
+.env.*
+!.env.example
+.replicera-test-state/
+
+# Local development guidance and planning
+AGENTS.md
+SPEC.md
+PLAN.md
+docs/feature-review.md

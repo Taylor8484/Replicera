@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: dotnet build Replicera.sln --no-restore --configuration Release
+      - run: dotnet test Replicera.sln --no-build --configuration Release --filter "Category!=Credentialed&Category!=SqlServerIntegration&Category!=PostgreSqlIntegration&Category!=OracleIntegration&Category!=DataverseSqlEndToEnd&Category!=DataverseOracleEndToEnd&Category!=Scale"
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: dotnet format Replicera.sln --no-restore --verify-no-changes
+
+  sql-server-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: scripts/run-sqlserver-integration-tests.sh
+
+  postgresql-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: scripts/run-postgresql-integration-tests.sh
+
+  oracle-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: scripts/run-oracle-integration-tests.sh
+
+  scale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: scripts/run-scale-test.sh
+
+  publish-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            runtime: linux-x64
+            executable: replicera
+          - os: windows-latest
+            runtime: win-x64
+            executable: replicera.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Publish framework-dependent artifact
+        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained false --output artifacts/framework-dependent
+      - name: Smoke-test framework-dependent artifact
+        shell: pwsh
+        run: '& (Join-Path "artifacts/framework-dependent" "${{ matrix.executable }}") --help'
+      - name: Publish self-contained artifact
+        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/self-contained
+      - name: Smoke-test self-contained artifact
+        shell: pwsh
+        run: '& (Join-Path "artifacts/self-contained" "${{ matrix.executable }}") --help'
+      - name: Build versioned release package
+        run: python scripts/package_release.py --version 0.1.0-ci --runtime ${{ matrix.runtime }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: replicera-${{ matrix.runtime }}
+          path: artifacts/
+          if-no-files-found: error
