@@ -65,6 +65,8 @@ def main() -> None:
         for source, destination in (
             ("README.md", "README.md"),
             ("LICENSE", "LICENSE"),
+            ("COMMUNITY.md", "COMMUNITY.md"),
+            ("CONTRIBUTING.md", "CONTRIBUTING.md"),
             ("THIRD-PARTY-NOTICES.md", "THIRD-PARTY-NOTICES.md"),
             ("docs/operations.md", "OPERATIONS.md"),
         ):

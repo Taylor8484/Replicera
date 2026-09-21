@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Replicera source code is licensed under Apache-2.0. Third-party packages retain their own licenses; the project license does not replace those terms.
+Replicera Community source code is licensed under MPL-2.0. Third-party packages retain their own licenses; the project license does not replace those terms.
 
 Runtime dependencies include:
 

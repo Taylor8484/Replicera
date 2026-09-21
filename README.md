@@ -87,6 +87,12 @@ See `THIRD-PARTY-NOTICES.md` before distributing binaries.
 See [`docs/operations.md`](docs/operations.md) for privileges, deployment, recovery, resynchronization, and troubleshooting.
 Current platform support and limitations are listed in the [`v0.1 draft release notes`](docs/release-notes/v0.1-draft.md).
 
+## Licensing and Contributions
+
+Replicera Community is open-source software licensed under the [Mozilla Public License 2.0](LICENSE). Commercial use is permitted subject to the MPL 2.0 terms. Replicera may offer separately licensed commercial products or extensions in the future; this does not change the MPL-2.0 licensing of the Community project.
+
+The Community edition is intended to remain a complete, useful replication product. See [Community Principles](COMMUNITY.md) for the open-core boundary and Community feature guarantee. See [Contributing](CONTRIBUTING.md) for contribution standards and the pending contributor agreement model.
+
 ## Status
 
 Replicera is under active v0.1 development. Public commands and configuration formats may change until v0.1.
