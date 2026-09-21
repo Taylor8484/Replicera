@@ -49,7 +49,7 @@ done
 test "$(docker inspect --format '{{.State.Health.Status}}' "$container_name")" = "healthy"
 
 docker exec -i "$container_name" bash -lc \
-    'sqlplus -s "system/${ORACLE_PWD}@FREEPDB1"' <<SQL >/dev/null
+    'sqlplus -s "sys/${ORACLE_PWD}@FREEPDB1 as sysdba"' <<SQL >/dev/null
 WHENEVER SQLERROR EXIT SQL.SQLCODE
 CREATE USER REPLICERA_E2E IDENTIFIED BY "$app_password";
 GRANT CREATE SESSION, CREATE TABLE, UNLIMITED TABLESPACE TO REPLICERA_E2E;
