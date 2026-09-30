@@ -30,12 +30,14 @@ Published builds use the executable name `replicera`. Run `replicera --version` 
 
 ## Release Packages
 
-Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, contribution and community documents, third-party notices, and the `third-party-licenses` directory, which includes the .NET runtime license and notices. No release has been published yet. To create one, confirm CI is green on `main`, then tag and push, starting with a pre-release:
+Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, contribution and community documents, third-party notices, and the `third-party-licenses` directory, which includes the .NET runtime license and notices. No release has been published yet. To create one, confirm CI is green on `main`, then either run the **Release** workflow from the repository's Actions tab on `main` and enter a version such as `0.1.0-rc.1` (the workflow creates the tag on the tested commit), or tag and push, starting with a pre-release:
 
 ```sh
 git tag -a v0.1.0-rc.1 -m "Replicera 0.1.0 release candidate 1"
 git push origin v0.1.0-rc.1
 ```
+
+Do not create the release from GitHub's release page; the workflow creates it after the packages are built and verified.
 
 Packages can also be built locally:
 
