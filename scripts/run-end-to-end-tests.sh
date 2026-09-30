@@ -35,7 +35,7 @@ docker run --detach --name "$container_name" \
     --env ACCEPT_EULA=Y \
     --env MSSQL_SA_PASSWORD="$test_password" \
     --publish 127.0.0.1::1433 \
-    mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+    mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04 >/dev/null
 
 for attempt in $(seq 1 60); do
     if docker exec "$container_name" /opt/mssql-tools18/bin/sqlcmd \
