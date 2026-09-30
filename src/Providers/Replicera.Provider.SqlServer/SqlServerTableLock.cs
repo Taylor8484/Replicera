@@ -1,11 +1,12 @@
 using Microsoft.Data.SqlClient;
+using Replicera.Core.Abstractions;
 using Replicera.Core.Errors;
 
 namespace Replicera.Provider.SqlServer;
 
-internal sealed class SqlServerTableLock(SqlConnection connection, string resource) : IAsyncDisposable
+internal sealed class SqlServerTableLock(SqlConnection connection, string resource, string jobName, string logicalName) : IDestinationTableLock
 {
-    public static async Task<IAsyncDisposable> AcquireAsync(
+    public static async Task<IDestinationTableLock> AcquireAsync(
         string connectionString,
         string jobName,
         string logicalName,
@@ -33,12 +34,33 @@ internal sealed class SqlServerTableLock(SqlConnection connection, string resour
                 throw new SynchronizationAlreadyRunningException(jobName, logicalName);
             }
 
-            return new SqlServerTableLock(connection, resource);
+            return new SqlServerTableLock(connection, resource, jobName, logicalName);
         }
         catch
         {
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
+        }
+    }
+
+    public async Task EnsureHeldAsync(CancellationToken cancellationToken)
+    {
+        string? mode;
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT APPLOCK_MODE('public', @resource, 'Session');";
+            _ = command.Parameters.AddWithValue("@resource", resource);
+            mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        }
+        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
+        {
+            throw new TableLockLostException(jobName, logicalName, exception);
+        }
+
+        if (!string.Equals(mode, "Exclusive", StringComparison.Ordinal))
+        {
+            throw new TableLockLostException(jobName, logicalName);
         }
     }
 

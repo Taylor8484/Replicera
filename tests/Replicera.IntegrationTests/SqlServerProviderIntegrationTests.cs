@@ -671,6 +671,48 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task TableLock_DetectsLostLockSession()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var provider = new SqlServerProvider();
+        await using var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken);
+        await tableLock.EnsureHeldAsync(TestCancellationToken);
+
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var sessions = connection.CreateCommand();
+            sessions.CommandText = "SELECT session_id FROM sys.dm_exec_sessions WHERE database_id = DB_ID() AND is_user_process = 1 AND session_id <> @@SPID;";
+            var ids = new List<short>();
+            await using (var reader = await sessions.ExecuteReaderAsync(TestCancellationToken))
+            {
+                while (await reader.ReadAsync(TestCancellationToken))
+                {
+                    ids.Add(reader.GetInt16(0));
+                }
+            }
+
+            Assert.NotEmpty(ids);
+            foreach (var id in ids)
+            {
+                await using var kill = connection.CreateCommand();
+                kill.CommandText = $"KILL {id};";
+                _ = await kill.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+        }
+
+        await Assert.ThrowsAsync<TableLockLostException>(() => tableLock.EnsureHeldAsync(TestCancellationToken));
+        await using var replacement = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken);
+        await replacement.EnsureHeldAsync(TestCancellationToken);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

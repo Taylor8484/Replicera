@@ -509,6 +509,34 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task TableLock_DetectsLostLockSession()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var provider = new PostgreSqlProvider();
+        await using var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken);
+        await tableLock.EnsureHeldAsync(TestCancellationToken);
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var kill = new NpgsqlCommand(
+                "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();",
+                connection);
+            Assert.True((long)(await kill.ExecuteScalarAsync(TestCancellationToken))! > 0);
+        }
+
+        await Assert.ThrowsAsync<TableLockLostException>(() => tableLock.EnsureHeldAsync(TestCancellationToken));
+        await using var replacement = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken);
+        await replacement.EnsureHeldAsync(TestCancellationToken);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

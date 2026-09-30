@@ -627,6 +627,49 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task TableLock_DetectsLostLockSession()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var job = $"job_{UniqueSuffix()}";
+        var provider = new OracleProvider();
+        await using var tableLock = await provider.AcquireTableLockAsync(connectionString, job, "account", TestCancellationToken);
+        await tableLock.EnsureHeldAsync(TestCancellationToken);
+
+        await using (var connection = new OracleConnection(connectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            var sessions = new List<(decimal Sid, decimal Serial)>();
+            await using (var query = connection.CreateCommand())
+            {
+                query.CommandText = "SELECT SID, SERIAL# FROM V$SESSION WHERE USERNAME = USER AND SID <> SYS_CONTEXT('USERENV', 'SID')";
+                await using var reader = await query.ExecuteReaderAsync(TestCancellationToken);
+                while (await reader.ReadAsync(TestCancellationToken))
+                {
+                    sessions.Add((reader.GetDecimal(0), reader.GetDecimal(1)));
+                }
+            }
+
+            Assert.NotEmpty(sessions);
+            foreach (var (sid, serial) in sessions)
+            {
+                await using var kill = connection.CreateCommand();
+                kill.CommandText = $"ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE";
+                _ = await kill.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+        }
+
+        await Assert.ThrowsAsync<TableLockLostException>(() => tableLock.EnsureHeldAsync(TestCancellationToken));
+        await using var replacement = await provider.AcquireTableLockAsync(connectionString, job, "account", TestCancellationToken);
+        await replacement.EnsureHeldAsync(TestCancellationToken);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

@@ -37,6 +37,17 @@ public sealed class SynchronizationAlreadyRunningException : RepliceraException
     }
 }
 
+public sealed class TableLockLostException : RepliceraException
+{
+    public TableLockLostException(string jobName, string logicalName, Exception? innerException = null)
+        : base(
+            ErrorCategory.Synchronization,
+            $"The synchronization lock for job '{jobName}', table '{logicalName}' was lost before commit; the changes were rolled back and the checkpoint was not advanced.",
+            innerException)
+    {
+    }
+}
+
 public enum ExitCode
 {
     Success = 0,

@@ -308,7 +308,8 @@ internal static class RuntimeCommands
                 preserveExisting,
                 retainDeletedRows: preserveExisting,
                 mode: mode,
-                externalLockHeld: true).ConfigureAwait(false);
+                externalLockHeld: true,
+                tableLock: tableLock).ConfigureAwait(false);
             var duration = Stopwatch.GetElapsedTime(started);
             if (structuredOutput)
             {

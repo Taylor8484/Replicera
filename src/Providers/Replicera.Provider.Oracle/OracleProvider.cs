@@ -20,7 +20,7 @@ public sealed class OracleProvider : IDestinationProvider
     public IReplicationStateStore CreateStateStore(string connectionString) =>
         new OracleReplicationStateStore(connectionString);
 
-    public Task<IAsyncDisposable> AcquireTableLockAsync(
+    public Task<IDestinationTableLock> AcquireTableLockAsync(
         string connectionString,
         string jobName,
         string logicalName,
