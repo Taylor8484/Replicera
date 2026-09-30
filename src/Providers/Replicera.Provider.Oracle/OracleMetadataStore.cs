@@ -10,6 +10,26 @@ public sealed class OracleMetadataStore(string connectionString)
     {
         await using var connection = new OracleConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        if (await GetSchemaVersionAsync(connection, cancellationToken).ConfigureAwait(false) >= CurrentSchemaVersion)
+        {
+            return;
+        }
+
+        // The migration DDL needs exclusive table locks, so concurrent runs are serialized with a
+        // session lock instead of failing with ORA-00054.
+        await RequestMetadataLockAsync(connection, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ApplyMigrationsAsync(connection, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            await ReleaseMetadataLockAsync(connection).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task ApplyMigrationsAsync(OracleConnection connection, CancellationToken cancellationToken)
+    {
         foreach (var statement in MigrationOne)
         {
             await ExecuteDdlAsync(connection, statement, cancellationToken).ConfigureAwait(false);
@@ -29,6 +49,49 @@ public sealed class OracleMetadataStore(string connectionString)
             WHEN NOT MATCHED THEN INSERT (VERSION, APPLIED_UTC) VALUES (source.VERSION, SYSTIMESTAMP)
             """;
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<int> GetSchemaVersionAsync(OracleConnection connection, CancellationToken cancellationToken)
+    {
+        await using var exists = connection.CreateCommand();
+        exists.CommandText = "SELECT COUNT(*) FROM USER_TABLES WHERE TABLE_NAME = 'REPLICERA_SCHEMA_VERSIONS'";
+        if (Convert.ToInt32(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 0)
+        {
+            return 0;
+        }
+
+        await using var version = connection.CreateCommand();
+        version.CommandText = "SELECT NVL(MAX(VERSION), 0) FROM REPLICERA_SCHEMA_VERSIONS";
+        return Convert.ToInt32(await version.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private const string MetadataLockName = "replicera:metadata";
+
+    private static async Task RequestMetadataLockAsync(OracleConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.BindByName = true;
+        command.CommandText = """
+            DECLARE
+                result INTEGER;
+            BEGIN
+                result := DBMS_LOCK.REQUEST(DBMS_UTILITY.GET_HASH_VALUE(:lock_name, 0, 1073741823), 6, 60, FALSE);
+                IF result NOT IN (0, 4) THEN
+                    RAISE_APPLICATION_ERROR(-20001, 'Could not acquire the Replicera metadata lock (DBMS_LOCK result ' || result || ').');
+                END IF;
+            END;
+            """;
+        command.Parameters.Add("lock_name", OracleDbType.NVarchar2).Value = MetadataLockName;
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ReleaseMetadataLockAsync(OracleConnection connection)
+    {
+        await using var command = connection.CreateCommand();
+        command.BindByName = true;
+        command.CommandText = "DECLARE result INTEGER; BEGIN result := DBMS_LOCK.RELEASE(DBMS_UTILITY.GET_HASH_VALUE(:lock_name, 0, 1073741823)); END;";
+        command.Parameters.Add("lock_name", OracleDbType.NVarchar2).Value = MetadataLockName;
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     private static async Task ExecuteDdlAsync(

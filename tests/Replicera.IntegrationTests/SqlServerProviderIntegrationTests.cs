@@ -713,6 +713,21 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var store = new SqlServerMetadataStore(database.ConnectionString);
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
+        await store.EnsureCreatedAsync(TestCancellationToken);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

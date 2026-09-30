@@ -13,7 +13,12 @@ public sealed class SqlServerMetadataStore(string connectionString)
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = (SqlTransaction)transaction;
-        command.CommandText = $"{MigrationOne}{Environment.NewLine}{MigrationTwo}";
+        // Concurrent first runs would otherwise race on the existence checks in the migrations.
+        command.CommandText = $"""
+            EXEC sys.sp_getapplock @Resource = N'replicera:metadata', @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 60000;
+            {MigrationOne}
+            {MigrationTwo}
+            """;
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }

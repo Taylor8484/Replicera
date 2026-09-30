@@ -776,6 +776,20 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task MetadataStore_ConcurrentRunsAllSucceed()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var store = new OracleMetadataStore(connectionString);
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

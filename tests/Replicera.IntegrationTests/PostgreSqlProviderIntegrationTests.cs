@@ -572,6 +572,21 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var store = new PostgreSqlMetadataStore(database.ConnectionString);
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
+        await store.EnsureCreatedAsync(TestCancellationToken);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();
