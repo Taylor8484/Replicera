@@ -6,8 +6,11 @@ environment_file="${REPLICERA_ENV_FILE:-$repository_root/.env.local}"
 state_file="${REPLICERA_EXPIRED_CHECKPOINT_STATE:-$repository_root/.replicera-test-state/account-checkpoint.json}"
 
 if [[ -f "$environment_file" ]]; then
+    # Export every assignment so values reach dotnet test even without an explicit export.
+    set -a
     # shellcheck disable=SC1090
     source "$environment_file"
+    set +a
 fi
 
 if [[ ! -f "$state_file" ]]; then
