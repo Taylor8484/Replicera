@@ -3,6 +3,7 @@ using System.Text.Json;
 using Oracle.ManagedDataAccess.Client;
 using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 
 namespace Replicera.Provider.Oracle;
@@ -135,9 +136,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         }
         catch (OracleException exception) when (exception.Number == 54)
         {
-            throw new InvalidOperationException(
-                $"A synchronization is already running for job '{jobName}', table '{logicalName}'.",
-                exception);
+            throw new SynchronizationAlreadyRunningException(jobName, logicalName, exception);
         }
     }
 

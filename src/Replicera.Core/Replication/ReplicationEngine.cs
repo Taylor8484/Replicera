@@ -135,6 +135,12 @@ public sealed partial class ReplicationEngine
                 deleted);
             return metrics;
         }
+        catch (SynchronizationAlreadyRunningException)
+        {
+            // The run that holds the lock owns the table's state; recording a failure here would
+            // overwrite it.
+            throw;
+        }
         catch (RepliceraException exception)
         {
             LogReplicationFailed(

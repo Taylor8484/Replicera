@@ -726,7 +726,7 @@ public sealed class SqlServerProviderIntegrationTests
         var writer = new SqlServerDestinationWriter(database.ConnectionString);
         await using var first = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => writer.BeginInitialSyncAsync(
+        var error = await Assert.ThrowsAsync<SynchronizationAlreadyRunningException>(() => writer.BeginInitialSyncAsync(
             "integration",
             table,
             TestCancellationToken));

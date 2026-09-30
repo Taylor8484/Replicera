@@ -29,10 +29,11 @@ public class RepliceraException : Exception
 
 public sealed class SynchronizationAlreadyRunningException : RepliceraException
 {
-    public SynchronizationAlreadyRunningException(string jobName, string logicalName)
+    public SynchronizationAlreadyRunningException(string jobName, string logicalName, Exception? innerException = null)
         : base(
             ErrorCategory.Synchronization,
-            $"A synchronization is already running for job '{jobName}', table '{logicalName}'.")
+            $"A synchronization is already running for job '{jobName}', table '{logicalName}'.",
+            innerException)
     {
     }
 }

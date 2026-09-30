@@ -164,6 +164,21 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_DoesNotRecordFailureWhenAnotherRunHoldsTheTable()
+    {
+        var state = new FakeStateStore(null);
+        var engine = new ReplicationEngine(
+            new ThrowingSource(new SynchronizationAlreadyRunningException("job", "account")),
+            new FakeDestination(new FakeSession()),
+            state);
+
+        await Assert.ThrowsAsync<SynchronizationAlreadyRunningException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Null(state.MarkedState);
+    }
+
+    [Fact]
     public async Task SyncAsync_CancellationMarksFailureWithoutCommitting()
     {
         var session = new FakeSession();

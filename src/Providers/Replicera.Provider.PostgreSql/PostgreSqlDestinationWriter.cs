@@ -4,6 +4,7 @@ using Npgsql;
 using NpgsqlTypes;
 using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
 
@@ -143,7 +144,7 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
         var acquired = (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
         if (!acquired)
         {
-            throw new InvalidOperationException($"A synchronization is already running for job '{jobName}', table '{logicalName}'.");
+            throw new SynchronizationAlreadyRunningException(jobName, logicalName);
         }
     }
 

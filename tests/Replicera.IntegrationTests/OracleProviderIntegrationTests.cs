@@ -697,7 +697,7 @@ public sealed class OracleProviderIntegrationTests
 
         await using (var first = await writer.BeginIncrementalSyncAsync(job, table, "stable", TestCancellationToken))
         {
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            var error = await Assert.ThrowsAsync<SynchronizationAlreadyRunningException>(() =>
                 writer.BeginIncrementalSyncAsync(job, table, "stable", TestCancellationToken));
             Assert.Contains("already running", error.Message, StringComparison.Ordinal);
         }

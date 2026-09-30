@@ -550,7 +550,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
         await using var first = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var error = await Assert.ThrowsAsync<SynchronizationAlreadyRunningException>(() =>
             writer.BeginInitialSyncAsync("integration", table, TestCancellationToken));
 
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);

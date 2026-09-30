@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.Data.SqlClient;
 using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
 
@@ -162,7 +163,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
         var result = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
         if (result < 0)
         {
-            throw new InvalidOperationException($"A synchronization is already running for job '{jobName}', table '{logicalName}'.");
+            throw new SynchronizationAlreadyRunningException(jobName, logicalName);
         }
     }
 
