@@ -39,6 +39,21 @@ public sealed class DataverseMetadataTranslatorTests
         Assert.Equal((19, 2, 15), (revenue.Precision, revenue.Scale, revenue.MaxIntegerDigits));
     }
 
+    [Theory]
+    [InlineData(0, 2, 2)]
+    [InlineData(null, 3, 3)]
+    [InlineData(1, 2, 4)]
+    [InlineData(2, 2, 4)]
+    [InlineData(0, null, 4)]
+    public void TranslateColumn_UsesWidestMoneyScaleUnlessColumnPrecisionApplies(int? precisionSource, int? precision, int expectedScale)
+    {
+        var revenue = DataverseMetadataTranslator.TranslateColumn(
+            new MoneyAttributeMetadata { LogicalName = "revenue", Precision = precision, PrecisionSource = precisionSource },
+            "accountid");
+
+        Assert.Equal(expectedScale, revenue.Scale);
+    }
+
     [Fact]
     public void TranslateColumn_MarksUnknownTypeUnsupported()
     {
