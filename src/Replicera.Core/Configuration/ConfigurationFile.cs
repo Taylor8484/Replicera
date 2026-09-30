@@ -12,6 +12,7 @@ public static class ConfigurationFile
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        RespectNullableAnnotations = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
@@ -68,6 +69,13 @@ public static class ConfigurationFile
                 $"Configuration file '{path}' already exists.",
                 exception);
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new RepliceraException(
+                ErrorCategory.Configuration,
+                $"Could not create configuration '{path}': {exception.Message}",
+                exception);
+        }
     }
 
     public static async Task SaveAsync(
@@ -84,17 +92,35 @@ public static class ConfigurationFile
             throw new RepliceraException(ErrorCategory.Configuration, message);
         }
 
-        var fullPath = Path.GetFullPath(path);
-        var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
+        var targetPath = ResolveSaveTarget(Path.GetFullPath(path));
+        var temporaryPath = $"{targetPath}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            var fileOptions = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None
+            };
+            UnixFileMode? existingMode = null;
+            if (!OperatingSystem.IsWindows() && File.Exists(targetPath))
+            {
+                existingMode = File.GetUnixFileMode(targetPath);
+                fileOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            }
+
+            await using (var stream = new FileStream(temporaryPath, fileOptions))
             {
                 await JsonSerializer.SerializeAsync(stream, configuration, Options, cancellationToken).ConfigureAwait(false);
                 await stream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
             }
 
-            File.Move(temporaryPath, fullPath, true);
+            if (!OperatingSystem.IsWindows() && existingMode is { } mode)
+            {
+                File.SetUnixFileMode(temporaryPath, mode);
+            }
+
+            File.Move(temporaryPath, targetPath, true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -106,6 +132,20 @@ public static class ConfigurationFile
         finally
         {
             File.Delete(temporaryPath);
+        }
+    }
+
+    // Replace the file a symbolic link points to rather than the link itself, so a linked
+    // configuration keeps working after an update.
+    private static string ResolveSaveTarget(string fullPath)
+    {
+        try
+        {
+            return File.ResolveLinkTarget(fullPath, returnFinalTarget: true)?.FullName ?? fullPath;
+        }
+        catch (IOException)
+        {
+            return fullPath;
         }
     }
 }

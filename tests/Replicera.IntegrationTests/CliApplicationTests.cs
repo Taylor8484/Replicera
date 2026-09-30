@@ -180,6 +180,28 @@ public sealed class CliApplicationTests
         }
     }
 
+    [Theory]
+    [InlineData("00:05:00", 0, 0, 5, 0)]
+    [InlineData("00:00:30", 0, 0, 0, 30)]
+    [InlineData("12:00:00", 0, 12, 0, 0)]
+    [InlineData("1.00:00:00", 1, 0, 0, 0)]
+    public void TryParseInterval_AcceptsExplicitDurations(string value, int days, int hours, int minutes, int seconds)
+    {
+        Assert.True(CliApplication.TryParseInterval(value, out var interval));
+        Assert.Equal(new TimeSpan(days, hours, minutes, seconds), interval);
+    }
+
+    [Theory]
+    [InlineData("5")]
+    [InlineData("5m")]
+    [InlineData("00:05")]
+    [InlineData("-00:05:00")]
+    [InlineData("24:00:00")]
+    public void TryParseInterval_RejectsAmbiguousOrInvalidDurations(string value)
+    {
+        Assert.False(CliApplication.TryParseInterval(value, out _));
+    }
+
     [Fact]
     public async Task UnknownCommand_ReturnsInvalidInput()
     {
@@ -405,6 +427,35 @@ public sealed class CliApplicationTests
         Assert.Equal(2, attempts);
         Assert.Contains("failed with exit code 7", output.ToString(), StringComparison.Ordinal);
         Assert.Contains("succeeded", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DestinationAdd_ValueInsteadOfVariableNameIsRejectedWithoutSavingOrEchoingIt()
+    {
+        var directory = Directory.CreateTempSubdirectory("replicera-test-");
+        var path = Path.Combine(directory.FullName, "replicera.json");
+        const string secret = "Server=db;Password=hunter2";
+        try
+        {
+            _ = await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None);
+            var before = await File.ReadAllTextAsync(path);
+            using var error = new StringWriter();
+
+            var exitCode = await CliApplication.RunAsync(
+                ["destination", "add", "--name", "sql", "--connection-env", secret, "--config", path],
+                TextWriter.Null,
+                error,
+                CancellationToken.None);
+
+            Assert.Equal(2, exitCode);
+            Assert.Contains("connectionStringEnvironmentVariable", error.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("hunter2", error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(before, await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
     }
 
     [Fact]

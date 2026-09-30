@@ -77,7 +77,7 @@ replicera schedule set --job development --interval 00:05:00 --run-on-start
 replicera worker --job development
 ```
 
-The `--secret-env` and `--connection-env` arguments are environment-variable names. A job must already exist in the configuration before using `tables add`.
+The `--secret-env`, `--connection-env`, and `--certificate-password-env` arguments are environment-variable names, not values; names may contain only letters, digits, and underscores and must not start with a digit. A job must already exist in the configuration before using `tables add`.
 Use `source add --interactive`, `destination add --interactive`, or `job add --interactive` to prompt for omitted setup values. The prompts request secret-variable names, never secret contents.
 
 `inspect` reads Dataverse and destination metadata but does not enable change tracking or modify destination schema. `sync` performs those configured mutations.
