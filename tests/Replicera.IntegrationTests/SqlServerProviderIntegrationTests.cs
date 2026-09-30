@@ -536,6 +536,33 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        await PrepareTableAsync(database.ConnectionString, AccountsTable(nameLength: 200));
+        var schema = new SqlServerSchemaManager(database.ConnectionString);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        var narrowed = AccountsTable(nameLength: 100);
+        var plan = SchemaPlanner.Plan(narrowed, await schema.ReadTableAsync(narrowed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync("integration", narrowed, plan, TestCancellationToken);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", narrowed, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Short", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var destination = await schema.ReadTableAsync(narrowed, TestCancellationToken);
+        Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

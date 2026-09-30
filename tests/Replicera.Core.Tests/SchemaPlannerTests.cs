@@ -328,7 +328,7 @@ public sealed class SchemaPlannerTests
     }
 
     [Fact]
-    public void Plan_StillBlocksBoundedDestinationStringNarrowing()
+    public void Plan_RetainsWiderDestinationWhenSourceStringNarrows()
     {
         var destination = new DestinationTable(
             "dbo",
@@ -343,8 +343,9 @@ public sealed class SchemaPlannerTests
         var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy());
 
         var change = Assert.Single(plan.Changes);
-        Assert.Equal(SchemaChangeKind.IncompatibleColumn, change.Kind);
-        Assert.True(change.IsBlocking);
+        Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, change.Kind);
+        Assert.False(change.IsAutomatic);
+        Assert.False(plan.HasBlockingChanges);
     }
 
     [Fact]
@@ -448,14 +449,27 @@ public sealed class SchemaPlannerTests
     }
 
     [Fact]
-    public void Plan_StillBlocksScaleDecrease()
+    public void Plan_RetainsWiderDestinationWhenSourceScaleDecreases()
     {
         var plan = SchemaPlanner.Plan(
             NumericTable(SourceType.Decimal, 38, 2, maxIntegerDigits: 12),
             NumericDestination(SourceType.Decimal, 38, 4),
             new SchemaPolicy());
 
+        Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, Assert.Single(plan.Changes).Kind);
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_BlocksNarrowerScaleWhenDestinationCannotHoldSourceIntegerDigits()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Decimal, 14, 2, maxIntegerDigits: null),
+            NumericDestination(SourceType.Decimal, 12, 4),
+            new SchemaPolicy());
+
         Assert.Equal(SchemaChangeKind.IncompatibleColumn, Assert.Single(plan.Changes).Kind);
+        Assert.True(plan.HasBlockingChanges);
     }
 
     private static TableDefinition NumericTable(SourceType type, int precision, int scale, int? maxIntegerDigits) => new(

@@ -165,10 +165,20 @@ public static class SchemaPlanner
                     policy.ExpandCompatibleColumns == SchemaAction.Automatic,
                     policy.ExpandCompatibleColumns != SchemaAction.Automatic));
             }
-            else if (IsNarrowingOrIncompatible(sourceColumn, destinationColumn))
+            else if (IsNarrowing(sourceColumn, destinationColumn))
             {
-                changes.Add(Incompatible(sourceColumn.LogicalName, "The source change is narrowing or incompatible."));
-                continue;
+                if (!DestinationHoldsSource(sourceColumn, destinationColumn))
+                {
+                    changes.Add(Incompatible(sourceColumn.LogicalName, "The source change is narrowing or incompatible."));
+                    continue;
+                }
+
+                changes.Add(new SchemaChange(
+                    SchemaChangeKind.NarrowerSourceColumn,
+                    sourceColumn.LogicalName,
+                    $"Source column '{sourceColumn.LogicalName}' is narrower than its destination column; retain the wider destination column.",
+                    false,
+                    false));
             }
 
             if (!sourceColumn.IsPrimaryKey && !destinationColumn.IsNullable)
@@ -296,7 +306,7 @@ public static class SchemaPlanner
         return IntegerDigits(source.Precision, source.Scale) >= requiredIntegerDigits;
     }
 
-    private static bool IsNarrowingOrIncompatible(ColumnDefinition source, DestinationColumn destination)
+    private static bool IsNarrowing(ColumnDefinition source, DestinationColumn destination)
     {
         return source.SourceType switch
         {
@@ -305,6 +315,21 @@ public static class SchemaPlanner
             SourceType.Decimal or SourceType.Money =>
                 IntegerDigits(source.Precision, source.Scale) < IntegerDigits(destination.Precision, destination.Scale)
                 || Value(source.Scale) < Value(destination.Scale),
+            _ => false
+        };
+    }
+
+    // A narrower source is harmless when the existing destination column still holds every value
+    // the source can produce; the wider column is kept rather than shrunk.
+    private static bool DestinationHoldsSource(ColumnDefinition source, DestinationColumn destination)
+    {
+        return source.SourceType switch
+        {
+            SourceType.String => true,
+            SourceType.Decimal or SourceType.Money =>
+                Value(destination.Scale) >= Value(source.Scale)
+                && IntegerDigits(destination.Precision, destination.Scale)
+                    >= (source.MaxIntegerDigits ?? IntegerDigits(source.Precision, source.Scale)),
             _ => false
         };
     }

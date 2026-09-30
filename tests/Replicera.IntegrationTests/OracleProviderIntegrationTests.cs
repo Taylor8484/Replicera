@@ -483,6 +483,36 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var destinationName = $"account_{suffix}";
+        await PrepareTableAsync(connectionString, job, AccountsTable(destinationName, nameLength: 200));
+        var schema = new OracleSchemaManager(connectionString);
+        var writer = new OracleDestinationWriter(connectionString);
+        var narrowed = AccountsTable(destinationName, nameLength: 100);
+        var plan = SchemaPlanner.Plan(narrowed, await schema.ReadTableAsync(narrowed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync(job, narrowed, plan, TestCancellationToken);
+        await using (var session = await writer.BeginInitialSyncAsync(job, narrowed, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Short", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var destination = await schema.ReadTableAsync(narrowed, TestCancellationToken);
+        Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();
