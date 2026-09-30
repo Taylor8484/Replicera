@@ -11,9 +11,9 @@ The license texts referenced below are in the `third-party-licenses` directory, 
 | Package | Version | License | Copyright |
 | --- | --- | --- | --- |
 | `Microsoft.Bcl.Cryptography` | 9.0.18 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
-| `Microsoft.Data.SqlClient` | 7.1.0 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
-| `Microsoft.Data.SqlClient.Extensions.Abstractions` | 7.1.0 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
-| `Microsoft.Data.SqlClient.Internal.Logging` | 7.1.0 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
+| `Microsoft.Data.SqlClient` | 7.1.1 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
+| `Microsoft.Data.SqlClient.Extensions.Abstractions` | 7.1.1 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
+| `Microsoft.Data.SqlClient.Internal.Logging` | 7.1.1 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Data.SqlClient.SNI.runtime` | 7.1.0 | [Package license](third-party-licenses/Microsoft.Data.SqlClient.SNI.runtime-LICENSE.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Caching.Abstractions` | 9.0.18 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Caching.Memory` | 9.0.18 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
@@ -21,10 +21,10 @@ The license texts referenced below are in the `third-party-licenses` directory, 
 | `Microsoft.Extensions.Configuration.Abstractions` | 3.1.9 | [Apache-2.0](third-party-licenses/Apache-2.0.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Configuration.Binder` | 3.1.9 | [Apache-2.0](third-party-licenses/Apache-2.0.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.DependencyInjection` | 3.1.9 | [Apache-2.0](third-party-licenses/Apache-2.0.txt) | © Microsoft Corporation. All rights reserved. |
-| `Microsoft.Extensions.DependencyInjection.Abstractions` | 10.0.0 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
+| `Microsoft.Extensions.DependencyInjection.Abstractions` | 10.0.12 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Http` | 3.1.9 | [Apache-2.0](third-party-licenses/Apache-2.0.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Logging` | 3.1.9 | [Apache-2.0](third-party-licenses/Apache-2.0.txt) | © Microsoft Corporation. All rights reserved. |
-| `Microsoft.Extensions.Logging.Abstractions` | 10.0.0 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
+| `Microsoft.Extensions.Logging.Abstractions` | 10.0.12 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.ObjectPool` | 8.0.10 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Options` | 9.0.18 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
 | `Microsoft.Extensions.Primitives` | 9.0.18 | [MIT](third-party-licenses/MIT.txt) | © Microsoft Corporation. All rights reserved. |
