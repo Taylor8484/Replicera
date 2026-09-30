@@ -264,7 +264,14 @@ internal static class RuntimeCommands
             var trackingStatus = await tracking.GetStatusAsync(logicalName, cancellationToken).ConfigureAwait(false);
             if (!trackingStatus.IsEnabled)
             {
-                if (!trackingStatus.CanEnable || !context.Job.Sync.EnableChangeTracking)
+                if (!trackingStatus.CanEnable)
+                {
+                    throw new RepliceraException(
+                        ErrorCategory.UnsupportedMetadata,
+                        $"Change tracking is disabled for '{logicalName}' and cannot be enabled: {trackingStatus.BlockedReason}");
+                }
+
+                if (!context.Job.Sync.EnableChangeTracking)
                 {
                     throw new RepliceraException(
                         ErrorCategory.UnsupportedMetadata,
