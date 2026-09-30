@@ -290,7 +290,9 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             _ = command.Parameters.AddWithValue("@deleted", metrics.RecordsDeleted);
             _ = command.Parameters.AddWithValue("@pages", metrics.PagesProcessed);
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            // Once the commit is sent it must not be abandoned: a cancelled commit leaves the outcome
+            // unknown while the session still tries to roll back.
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
             committed = true;
         }
 

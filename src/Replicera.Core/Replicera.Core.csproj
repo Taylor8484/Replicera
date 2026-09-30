@@ -10,4 +10,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Replicera.Core.Tests" />
+  </ItemGroup>
 </Project>

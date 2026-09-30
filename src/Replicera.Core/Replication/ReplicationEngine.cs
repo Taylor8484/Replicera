@@ -13,17 +13,29 @@ public sealed partial class ReplicationEngine
     private readonly IDestinationWriter destination;
     private readonly IReplicationStateStore stateStore;
     private readonly ILogger<ReplicationEngine> logger;
+    private readonly TimeSpan failureRecordingTimeout;
 
     public ReplicationEngine(
         ISourceChangeReader source,
         IDestinationWriter destination,
         IReplicationStateStore stateStore,
         ILogger<ReplicationEngine>? logger = null)
+        : this(source, destination, stateStore, logger, TimeSpan.FromSeconds(30))
+    {
+    }
+
+    internal ReplicationEngine(
+        ISourceChangeReader source,
+        IDestinationWriter destination,
+        IReplicationStateStore stateStore,
+        ILogger<ReplicationEngine>? logger,
+        TimeSpan failureRecordingTimeout)
     {
         this.source = source;
         this.destination = destination;
         this.stateStore = stateStore;
         this.logger = logger ?? NullLogger<ReplicationEngine>.Instance;
+        this.failureRecordingTimeout = failureRecordingTimeout;
     }
 
     public async Task<SyncMetrics> SyncAsync(
@@ -132,8 +144,7 @@ public sealed partial class ReplicationEngine
                 table.LogicalName,
                 failedState,
                 exception.Category.ToString(),
-                FailureMessage(exception),
-                CancellationToken.None).ConfigureAwait(false);
+                FailureMessage(exception)).ConfigureAwait(false);
             throw;
         }
         catch (OperationCanceledException)
@@ -147,8 +158,7 @@ public sealed partial class ReplicationEngine
                 table.LogicalName,
                 TableState.Failed,
                 ErrorCategory.Synchronization.ToString(),
-                "Synchronization was cancelled before the checkpoint could be committed.",
-                CancellationToken.None).ConfigureAwait(false);
+                "Synchronization was cancelled before the checkpoint could be committed.").ConfigureAwait(false);
             throw;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -162,8 +172,7 @@ public sealed partial class ReplicationEngine
                 table.LogicalName,
                 TableState.Failed,
                 ErrorCategory.Synchronization.ToString(),
-                "Synchronization failed before the checkpoint could be committed.",
-                CancellationToken.None).ConfigureAwait(false);
+                "Synchronization failed before the checkpoint could be committed.").ConfigureAwait(false);
             throw new RepliceraException(
                 ErrorCategory.Synchronization,
                 "Synchronization failed before the checkpoint could be committed.",
@@ -177,23 +186,25 @@ public sealed partial class ReplicationEngine
         _ => exception.Message
     };
 
+    // Failure recording runs after the synchronization was cancelled or failed, so it cannot use the
+    // caller's token; a bounded timeout keeps an unresponsive destination from blocking shutdown.
     private async Task TryMarkFailureAsync(
         string jobName,
         string logicalName,
         TableState state,
         string errorCode,
-        string message,
-        CancellationToken cancellationToken)
+        string message)
     {
         try
         {
+            using var timeout = new CancellationTokenSource(failureRecordingTimeout);
             await stateStore.MarkFailureAsync(
                 jobName,
                 logicalName,
                 state,
                 errorCode,
                 message,
-                cancellationToken).ConfigureAwait(false);
+                timeout.Token).ConfigureAwait(false);
         }
         catch
         {
