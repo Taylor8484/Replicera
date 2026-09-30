@@ -110,6 +110,25 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_BoundsFailureRecordingWhenDestinationDoesNotRespond()
+    {
+        var state = new HangingStateStore();
+        var engine = new ReplicationEngine(
+            new ThrowingSource(new OperationCanceledException()),
+            new FakeDestination(new FakeSession()),
+            state,
+            null,
+            TimeSpan.FromMilliseconds(200));
+
+        var sync = engine.SyncAsync("job", Table(), 100, CancellationToken.None);
+        var finished = await Task.WhenAny(sync, Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.Same(sync, finished);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sync);
+        Assert.True(state.RecordingCancelled);
+    }
+
+    [Fact]
     public async Task SyncAsync_CancellationMarksFailureWithoutCommitting()
     {
         var session = new FakeSession();
@@ -369,6 +388,35 @@ public sealed class ReplicationEngineTests
         {
             Disposed = true;
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class HangingStateStore : IReplicationStateStore
+    {
+        public bool RecordingCancelled { get; private set; }
+
+        public Task<TableReplicationState?> GetTableStateAsync(
+            string jobName,
+            string logicalName,
+            CancellationToken cancellationToken) => Task.FromResult<TableReplicationState?>(null);
+
+        public async Task MarkFailureAsync(
+            string jobName,
+            string logicalName,
+            TableState failedState,
+            string errorCode,
+            string sanitizedMessage,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                RecordingCancelled = true;
+                throw;
+            }
         }
     }
 

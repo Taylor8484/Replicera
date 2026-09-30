@@ -9,15 +9,12 @@ Replicera supports two complementary execution styles:
 
 The portable foreground worker is the permanent baseline. Future service integrations must wrap the same worker and synchronization runner rather than replacing the portable command.
 
-The first worker intentionally supports one job per process, an interval measured after completion, optional execution on startup, graceful cancellation, and retry on the next interval after failure. It does not accumulate missed runs, automatically perform full resynchronization, reload configuration while running, or install itself as an operating-system service.
+The worker supports one job per process, an interval measured after completion, optional execution on startup, graceful cancellation on SIGINT, SIGTERM, and SIGQUIT, configuration reload before every cycle, an idle state while its schedule is disabled, and bounded exponential backoff with jitter after consecutive failures. Failure events carry a sanitized reason and flag failures that need an operator; such failures keep retrying with backoff rather than pausing the job. It does not accumulate missed runs, automatically perform full resynchronization, or install itself as an operating-system service.
 
 ## Next: harden the portable worker
 
 - Extract the synchronization orchestration and structured results from the CLI formatting layer so `sync` and `worker` share a dedicated application service.
 - Add a health model that distinguishes the running process from the most recent synchronization result.
-- Add optional bounded failure backoff and jitter without duplicating Dataverse request retries.
-- Decide whether permanent configuration, authentication, schema, and `ResyncRequired` failures should pause a job until operator intervention.
-- Add an optional configuration reload mechanism with an explicit validation-and-swap boundary.
 - Add end-to-end cancellation coverage against each destination provider.
 
 ## Multiple scheduled jobs
@@ -49,7 +46,7 @@ Interval scheduling remains the recommended choice for change-feed polling.
 
 Add native background operation around the existing foreground worker:
 
-1. Host lifecycle support for SIGTERM and service-manager shutdown deadlines.
+1. Service-manager shutdown deadlines beyond the documented stop timeouts (SIGTERM handling is in place).
 2. A documented systemd unit using `replicera worker`.
 3. Windows Service integration using the same worker host.
 4. Service installation, removal, start, stop, and status commands only if automatic installation provides enough value to justify elevated privileges and platform-specific maintenance.

@@ -74,7 +74,8 @@ public static class CliApplication
                 "job" when HasSubcommand(arguments, "list") => await ListJobsAsync(configPath, output, cancellationToken).ConfigureAwait(false),
                 "schedule" when HasSubcommand(arguments, "set") => await SetScheduleAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
                 "schedule" when HasSubcommand(arguments, "show") => await ShowScheduleAsync(arguments, configPath, output, structuredOutput, cancellationToken).ConfigureAwait(false),
-                "schedule" when HasSubcommand(arguments, "disable") => await DisableScheduleAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
+                "schedule" when HasSubcommand(arguments, "disable") => await SetScheduleEnabledAsync(arguments, configPath, output, false, cancellationToken).ConfigureAwait(false),
+                "schedule" when HasSubcommand(arguments, "enable") => await SetScheduleEnabledAsync(arguments, configPath, output, true, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "add") => await AddTableAsync(arguments, positional[0], configPath, output, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "remove") => await RemoveTableAsync(arguments, positional[0], configPath, output, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "list") => await ListConfiguredTablesAsync(configPath, output, cancellationToken).ConfigureAwait(false),
@@ -434,20 +435,21 @@ public static class CliApplication
         return (int)ExitCode.Success;
     }
 
-    private static async Task<int> DisableScheduleAsync(
+    private static async Task<int> SetScheduleEnabledAsync(
         IReadOnlyList<string> arguments,
         string path,
         TextWriter output,
+        bool enabled,
         CancellationToken cancellationToken)
     {
         var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
         var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
         var schedule = selectedJob.Schedule
             ?? throw new RepliceraException(ErrorCategory.Configuration, $"Job '{selectedJob.Name}' has no schedule configured.");
-        var changedJob = selectedJob with { Schedule = schedule with { Enabled = false } };
+        var changedJob = selectedJob with { Schedule = schedule with { Enabled = enabled } };
         var updated = ReplaceJob(configuration, selectedJob, changedJob);
         await ConfigurationFile.SaveAsync(path, updated, cancellationToken).ConfigureAwait(false);
-        await output.WriteLineAsync($"Disabled schedule for job '{selectedJob.Name}'.").ConfigureAwait(false);
+        await output.WriteLineAsync($"{(enabled ? "Enabled" : "Disabled")} schedule for job '{selectedJob.Name}'.").ConfigureAwait(false);
         return (int)ExitCode.Success;
     }
 
@@ -466,6 +468,12 @@ public static class CliApplication
         return await ScheduledWorker.RunAsync(
             selectedJob.Name,
             schedule,
+            async token =>
+            {
+                var reloaded = await ConfigurationFile.LoadAsync(path, token).ConfigureAwait(false);
+                var job = reloaded.Jobs.SingleOrDefault(job => string.Equals(job.Name, selectedJob.Name, StringComparison.OrdinalIgnoreCase));
+                return new WorkerScheduleState(job?.Schedule, job is not null);
+            },
             token => ExecuteScheduledSyncAsync(
                 path,
                 selectedJob.Name,
@@ -480,7 +488,7 @@ public static class CliApplication
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<int> ExecuteScheduledSyncAsync(
+    private static async Task<WorkerSyncResult> ExecuteScheduledSyncAsync(
         string path,
         string jobName,
         TextWriter output,
@@ -492,7 +500,7 @@ public static class CliApplication
     {
         try
         {
-            return await RuntimeCommands.SyncAsync(
+            return new WorkerSyncResult(await RuntimeCommands.SyncAsync(
                 path,
                 jobName,
                 null,
@@ -502,7 +510,7 @@ public static class CliApplication
                 structuredOutput,
                 verbose,
                 structuredDiagnostics,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -510,37 +518,41 @@ public static class CliApplication
         }
         catch (RepliceraException exception)
         {
-            await error.WriteLineAsync($"error: {exception.Message}").ConfigureAwait(false);
-            return (int)ExitCodeMapper.From(exception.Category);
+            return await FailAsync(error, (int)ExitCodeMapper.From(exception.Category), exception.Message).ConfigureAwait(false);
         }
         catch (DataverseConnectionException)
         {
-            await error.WriteLineAsync("error: Dataverse authentication or connection failed.").ConfigureAwait(false);
-            return (int)ExitCode.AuthenticationOrAuthorization;
+            return await FailAsync(error, (int)ExitCode.AuthenticationOrAuthorization, "Dataverse authentication or connection failed.").ConfigureAwait(false);
         }
         catch (DataverseOperationException)
         {
-            await error.WriteLineAsync("error: Dataverse operation failed.").ConfigureAwait(false);
-            return (int)ExitCode.SourceConnectivity;
+            return await FailAsync(error, (int)ExitCode.SourceConnectivity, "Dataverse operation failed.").ConfigureAwait(false);
         }
         catch (SqlException exception)
         {
-            await error.WriteLineAsync($"error: SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
-            return (int)ExitCode.DestinationConnectivity;
+            return await FailAsync(error, (int)ExitCode.DestinationConnectivity, $"SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
         }
         catch (DbException exception)
         {
-            await error.WriteLineAsync(exception.SqlState is { Length: > 0 } state
-                ? $"error: destination database operation failed (SQLSTATE {state})."
-                : "error: destination database operation failed.").ConfigureAwait(false);
-            return (int)ExitCode.DestinationConnectivity;
+            return await FailAsync(
+                error,
+                (int)ExitCode.DestinationConnectivity,
+                exception.SqlState is { Length: > 0 } state
+                    ? $"Destination database operation failed (SQLSTATE {state})."
+                    : "Destination database operation failed.").ConfigureAwait(false);
         }
         catch (Exception)
         {
-            await error.WriteLineAsync("error: unexpected internal failure.").ConfigureAwait(false);
-            return (int)ExitCode.Unexpected;
+            return await FailAsync(error, (int)ExitCode.Unexpected, "Unexpected internal failure.").ConfigureAwait(false);
         }
     }
+
+    private static async Task<WorkerSyncResult> FailAsync(TextWriter error, int exitCode, string message)
+    {
+        await error.WriteLineAsync($"error: {message}").ConfigureAwait(false);
+        return new WorkerSyncResult(exitCode, message);
+    }
+
 
     private static Task<int> AddTableAsync(
         IReadOnlyList<string> arguments,
@@ -768,6 +780,7 @@ public static class CliApplication
           replicera schedule set [--job <name>] --interval <hh:mm:ss> [--run-on-start|--wait-first] [--config <path>]
           replicera schedule show [--job <name>] [--json] [--config <path>]
           replicera schedule disable [--job <name>] [--config <path>]
+          replicera schedule enable [--job <name>] [--config <path>]
           replicera tables list [--config <path>]
           replicera tables add <table> [--job <name>] [--config <path>]
           replicera tables remove <table> [--job <name>] [--config <path>]

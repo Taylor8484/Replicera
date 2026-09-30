@@ -26,6 +26,7 @@ internal sealed record CommandSyntax(
         ["schedule set"] = Define(["--job", "--interval"], ["--run-on-start", "--wait-first"]),
         ["schedule show"] = Define(["--job"], ["--json"]),
         ["schedule disable"] = Define(["--job"]),
+        ["schedule enable"] = Define(["--job"]),
         ["tables list"] = Define(),
         ["tables add"] = Define(["--job"], positional: 1),
         ["tables remove"] = Define(["--job"], positional: 1),

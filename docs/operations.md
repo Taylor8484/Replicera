@@ -84,15 +84,18 @@ replicera schedule show --job production
 replicera worker --job production --log-json
 ```
 
-Use `--wait-first` instead of `--run-on-start` when the worker should wait one interval before its first synchronization. The interval must be between one second and seven days. It begins after each synchronization attempt completes, so a long run never overlaps itself and missed intervals do not accumulate. A failed attempt is reported and the worker tries again after the next interval. Configuration is loaded when the worker starts; restart it after changing the job or schedule.
+Use `--wait-first` instead of `--run-on-start` when the worker should wait one interval before its first synchronization. The interval must be between one second and seven days. It begins after each synchronization attempt completes, so a long run never overlaps itself and missed intervals do not accumulate. A failed attempt is reported and retried. After consecutive failures the wait doubles each time, starting from the interval, with plus or minus 20 percent jitter, up to one hour or the interval if that is longer; the first successful run restores the normal interval. Worker `syncSucceeded` and `syncFailed` events report `consecutiveFailures` and `nextRunIn`. A `syncFailed` event also carries the same sanitized `message` written to standard error and `requiresAttention`, which is `true` for configuration, authentication or authorization, schema, and resynchronization-required failures (exit codes `2`, `3`, `6`, and `8`) that need an operator before a later attempt can succeed. The worker keeps retrying those with backoff rather than pausing, so it resumes on its own once the cause is fixed. The worker reloads the configuration before every cycle, so changes to the job, its tables, its mode, and its schedule take effect on the next cycle without a restart. If the edited configuration fails validation, the worker reports a `configurationInvalid` event and continues with its last valid schedule. If the job is removed from the configuration, the worker stops with exit code `2`.
 
-The first worker version runs one job per process and must remain open. Press Ctrl+C to cancel an active synchronization through the normal checkpoint-safe cancellation path and stop the worker. Manual `replicera sync` remains available while a worker exists. Destination table locks prevent the two processes from mutating the same job/table simultaneously; a collision is reported as a synchronization failure and the worker tries again on its next interval.
+The worker runs one job per process and must remain open. Ctrl+C, SIGINT, SIGTERM, and SIGQUIT cancel an active synchronization through the normal checkpoint-safe path: the destination transaction rolls back, the stored checkpoint is unchanged, the worker reports `workerStopped`, and it exits with code `0`. A commit already in progress is allowed to finish. A second signal ends the process immediately. Give service managers enough time for the rollback of a large page, for example `docker stop --time 60` or `TimeoutStopSec=60` in a systemd unit, rather than the ten-second defaults. Manual `replicera sync` remains available while a worker exists. Destination table locks prevent the two processes from mutating the same job/table simultaneously; a collision is reported as a synchronization failure and the worker tries again on its next interval.
 
-Disable future worker starts without affecting manual synchronization:
+Pause scheduled synchronization without affecting manual synchronization, and resume it later:
 
 ```sh
 replicera schedule disable --job production
+replicera schedule enable --job production
 ```
+
+A running worker notices a disabled schedule on its next cycle, reports `scheduleDisabled`, and stays idle, checking again every minute or every interval if that is shorter, until the schedule is enabled. A worker started while its schedule is disabled starts idle, so a service manager that restarts the process does not enter a restart loop. `schedule enable` keeps the existing interval and start behavior.
 
 The worker never initiates `--full` automatically. If status reports `ResyncRequired`, stop or leave the worker running, perform the controlled manual recovery described below, and then allow the next scheduled incremental run to proceed.
 
