@@ -14,15 +14,11 @@ public sealed class PostgreSqlProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_POSTGRES_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -49,29 +45,21 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task StateStore_BeforeFirstSyncReturnsUninitializedState()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         Assert.Null(await new PostgreSqlReplicationStateStore(database.ConnectionString)
             .GetTableStateAsync("integration", "account", TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -124,15 +112,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Succeeded", reader.GetString(4));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DisposedSession_RollsBackRowsCheckpointAndTemporaryStaging()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -165,15 +149,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -205,15 +185,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition AmountTable(int scale) => new TableDefinition(
             "account",
@@ -264,15 +240,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition CodesTable(bool supported) => new TableDefinition(
             "account",
@@ -328,15 +300,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await new PostgreSqlMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
@@ -371,15 +339,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.True(relaxed!.Columns.Single(column => column.Name == "legacy").IsNullable);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         await PrepareTableAsync(database.ConnectionString, AccountsTable(nameLength: 200));
         var schema = new PostgreSqlSchemaManager(database.ConnectionString);
@@ -398,17 +362,13 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [Theory]
+    [SkippableTheory]
     [Trait("Category", "PostgreSqlIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
     public async Task ColumnWithChangedType_IsReplacedAccordingToMode(SynchronizationMode mode)
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition CodeTable(bool numeric) => new TableDefinition(
             "account",
@@ -473,15 +433,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition EventTable(DateTimeBehavior userLocal, DateTimeBehavior independent) => new TableDefinition(
             "event",
@@ -507,15 +463,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var provider = new PostgreSqlProvider();
         await using var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken);
@@ -535,15 +487,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -570,30 +518,22 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Null(state?.DataCheckpoint);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var store = new PostgreSqlMetadataStore(database.ConnectionString);
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
         await store.EnsureCreatedAsync(TestCancellationToken);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -606,15 +546,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task FailureState_IsDurableAndSanitized()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         await PrepareTableAsync(database.ConnectionString, AccountsTable());
         var store = new PostgreSqlReplicationStateStore(database.ConnectionString);
@@ -634,15 +570,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
         await using var unmanagedDatabase = await TestDatabase.CreateAsync();
-        if (unmanagedDatabase is null)
-        {
-            return;
-        }
 
         await using (var connection = new NpgsqlConnection(unmanagedDatabase.ConnectionString))
         {
@@ -697,15 +629,11 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "description");
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task SupportedValues_RoundTripAndStatusUsesConfiguredProvider()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = FidelityTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -906,13 +834,9 @@ public sealed class PostgreSqlProviderIntegrationTests
     {
         public string ConnectionString { get; } = connectionString;
 
-        public static async Task<TestDatabase?> CreateAsync()
+        public static async Task<TestDatabase> CreateAsync()
         {
-            var configured = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
-            if (string.IsNullOrWhiteSpace(configured))
-            {
-                return null;
-            }
+            var configured = IntegrationEnvironment.RequireConnectionString(ConnectionEnvironmentVariable);
 
             var adminBuilder = new NpgsqlConnectionStringBuilder(configured) { Database = "postgres" };
             var databaseName = $"replicera_{Guid.NewGuid():N}";

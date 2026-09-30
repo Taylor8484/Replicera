@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Fail instead of skipping when a test cannot find its database connection.
+export REPLICERA_INTEGRATION_REQUIRED=1
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_project="tests/Replicera.IntegrationTests/Replicera.IntegrationTests.csproj"
