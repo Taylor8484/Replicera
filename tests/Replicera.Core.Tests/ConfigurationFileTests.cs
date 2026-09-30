@@ -97,6 +97,47 @@ public sealed class ConfigurationFileTests : IDisposable
         Assert.Equal("existing", await File.ReadAllTextAsync(path));
     }
 
+    [Fact]
+    public async Task SaveAsync_PreservesExistingFilePermissions()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var path = await WriteAsync(ValidJson());
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var configuration = await ConfigurationFile.LoadAsync(path, CancellationToken.None);
+
+        await ConfigurationFile.SaveAsync(path, configuration, CancellationToken.None);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        Assert.Single(directory.GetFiles());
+    }
+
+    [Fact]
+    public async Task SaveAsync_UpdatesSymbolicLinkTargetAndKeepsLink()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var target = await WriteAsync(ValidJson());
+        var link = Path.Combine(directory.FullName, "linked.json");
+        File.CreateSymbolicLink(link, target);
+        var configuration = await ConfigurationFile.LoadAsync(link, CancellationToken.None);
+        var changed = configuration with
+        {
+            Jobs = [configuration.Jobs[0] with { Tables = ["account", "contact"] }]
+        };
+
+        await ConfigurationFile.SaveAsync(link, changed, CancellationToken.None);
+
+        Assert.NotNull(new FileInfo(link).LinkTarget);
+        Assert.Equal(["account", "contact"], (await ConfigurationFile.LoadAsync(target, CancellationToken.None)).Jobs[0].Tables);
+    }
+
     private async Task<string> WriteAsync(JsonNode json)
     {
         var path = Path.Combine(directory.FullName, $"{Guid.NewGuid():N}.json");
