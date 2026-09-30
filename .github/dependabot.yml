@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # xunit.v3 4.x requires the Microsoft Testing Platform runner, which changes how
+      # dotnet test and its filters work; adopt it as a planned migration, not a bump.
+      - dependency-name: xunit.v3
+        update-types: [version-update:semver-major]
     groups:
       nuget-minor-and-patch:
         update-types: [minor, patch]
