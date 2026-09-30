@@ -1108,14 +1108,7 @@ public sealed class SqlServerProviderIntegrationTests
             _ = await kill.ExecuteNonQueryAsync(TestCancellationToken);
         }
 
-        try
-        {
-            await session.DisposeAsync();
-        }
-        catch (Exception exception) when (exception is SqlException or InvalidOperationException)
-        {
-            // The server has already terminated and rolled back the session.
-        }
+        await session.DisposeAsync();
 
         await using var verification = new SqlConnection(database.ConnectionString);
         await verification.OpenAsync(TestCancellationToken);

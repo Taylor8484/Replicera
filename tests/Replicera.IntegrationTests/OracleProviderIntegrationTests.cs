@@ -670,6 +670,58 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        var writer = new OracleDestinationWriter(connectionString);
+        var session = await writer.BeginInitialSyncAsync(job, table, TestCancellationToken);
+        _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Must roll back after termination", 1)), TestCancellationToken);
+
+        await using (var administrator = new OracleConnection(connectionString))
+        {
+            await administrator.OpenAsync(TestCancellationToken);
+            var sessions = new List<(decimal Sid, decimal Serial)>();
+            await using (var query = administrator.CreateCommand())
+            {
+                query.CommandText = "SELECT SID, SERIAL# FROM V$SESSION WHERE USERNAME = USER AND SID <> SYS_CONTEXT('USERENV', 'SID')";
+                await using var reader = await query.ExecuteReaderAsync(TestCancellationToken);
+                while (await reader.ReadAsync(TestCancellationToken))
+                {
+                    sessions.Add((reader.GetDecimal(0), reader.GetDecimal(1)));
+                }
+            }
+
+            Assert.NotEmpty(sessions);
+            foreach (var (sid, serial) in sessions)
+            {
+                await using var kill = administrator.CreateCommand();
+                kill.CommandText = $"ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE";
+                _ = await kill.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+        }
+
+        await session.DisposeAsync();
+
+        await using var verification = new OracleConnection(connectionString);
+        await verification.OpenAsync(TestCancellationToken);
+        await using var count = verification.CreateCommand();
+        count.CommandText = $"SELECT COUNT(*) FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}";
+        Assert.Equal(0, Convert.ToInt32(await count.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+        var state = await new OracleReplicationStateStore(connectionString).GetTableStateAsync(job, table.LogicalName, TestCancellationToken);
+        Assert.Null(state?.DataCheckpoint);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

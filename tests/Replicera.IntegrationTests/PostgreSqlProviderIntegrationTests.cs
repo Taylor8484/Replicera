@@ -537,6 +537,41 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken);
+        _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Must roll back after termination", 1)), TestCancellationToken);
+
+        await using (var administrator = new NpgsqlConnection(database.ConnectionString))
+        {
+            await administrator.OpenAsync(TestCancellationToken);
+            await using var terminate = new NpgsqlCommand(
+                "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid();",
+                administrator);
+            Assert.True((long)(await terminate.ExecuteScalarAsync(TestCancellationToken))! > 0);
+        }
+
+        await session.DisposeAsync();
+
+        await using var verification = new NpgsqlConnection(database.ConnectionString);
+        await verification.OpenAsync(TestCancellationToken);
+        await using var count = new NpgsqlCommand("SELECT count(*) FROM public.account;", verification);
+        Assert.Equal(0L, await count.ExecuteScalarAsync(TestCancellationToken));
+        var state = await new PostgreSqlReplicationStateStore(database.ConnectionString).GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.Null(state?.DataCheckpoint);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

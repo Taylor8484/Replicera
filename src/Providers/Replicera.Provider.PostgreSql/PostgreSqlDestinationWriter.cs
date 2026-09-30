@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
@@ -78,6 +79,7 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
         {
             if (transaction is not null)
             {
+                await TryRollbackAsync(transaction).ConfigureAwait(false);
                 await transaction.DisposeAsync().ConfigureAwait(false);
             }
 
@@ -127,6 +129,18 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
         command.Parameters.AddWithValue("primary_key", table.PrimaryKey.LogicalName);
         return (Guid)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("PostgreSQL did not return the managed table ID."));
+    }
+
+    private static async Task TryRollbackAsync(DbTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is DbException or InvalidOperationException)
+        {
+            // The connection was lost, so the server has already rolled the transaction back.
+        }
     }
 
     private static async Task AcquireLockAsync(
@@ -248,15 +262,23 @@ public sealed class PostgreSqlDestinationWriter(string connectionString) : IDest
             committed = true;
         }
 
+        // Cleanup runs while another exception may be propagating, so it must not throw: a failed
+        // rollback means the connection is gone and the server has already discarded the transaction.
         public async ValueTask DisposeAsync()
         {
-            if (!committed)
+            try
             {
-                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-            }
+                if (!committed)
+                {
+                    await TryRollbackAsync(transaction).ConfigureAwait(false);
+                }
 
-            await transaction.DisposeAsync().ConfigureAwait(false);
-            await connection.DisposeAsync().ConfigureAwait(false);
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         private async Task CopyPageAsync(SourcePage page, CancellationToken cancellationToken)

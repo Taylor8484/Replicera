@@ -81,7 +81,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         {
             if (transaction is not null)
             {
-                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                await TryRollbackAsync(transaction).ConfigureAwait(false);
                 await transaction.DisposeAsync().ConfigureAwait(false);
             }
 
@@ -110,6 +110,18 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         return value is byte[] bytes
             ? OracleValueConverter.ToGuid(bytes)
             : throw new InvalidOperationException($"Table '{logicalName}' is not managed by Replicera.");
+    }
+
+    private static async Task TryRollbackAsync(OracleTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is OracleException or InvalidOperationException)
+        {
+            // The connection was lost, so the server has already rolled the transaction back.
+        }
     }
 
     private static async Task AcquireLockAsync(
@@ -282,17 +294,28 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
             await TryDropStagingAsync(connection, stagingName).ConfigureAwait(false);
         }
 
+        // Cleanup runs while another exception may be propagating, so it must not throw: a failed
+        // rollback means the connection is gone and the server has already discarded the transaction.
         public async ValueTask DisposeAsync()
         {
-            if (!completed)
+            try
             {
-                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                completed = true;
-            }
+                if (!completed)
+                {
+                    await TryRollbackAsync(transaction).ConfigureAwait(false);
+                    completed = true;
+                }
 
-            await transaction.DisposeAsync().ConfigureAwait(false);
-            await TryDropStagingAsync(connection, stagingName).ConfigureAwait(false);
-            await connection.DisposeAsync().ConfigureAwait(false);
+                await transaction.DisposeAsync().ConfigureAwait(false);
+                if (connection.State == ConnectionState.Open)
+                {
+                    await TryDropStagingAsync(connection, stagingName).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         private async Task InsertStagingAsync(SourcePage page, CancellationToken cancellationToken)
