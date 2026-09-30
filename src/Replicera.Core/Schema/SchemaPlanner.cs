@@ -249,11 +249,27 @@ public static class SchemaPlanner
         {
             SourceType.String => Length(source.MaxLength) > Length(destination.MaxLength),
             SourceType.Decimal or SourceType.Money =>
-                IntegerDigits(source.Precision, source.Scale) >= IntegerDigits(destination.Precision, destination.Scale)
-                && Value(source.Scale) >= Value(destination.Scale)
-                && (source.Precision != destination.Precision || source.Scale != destination.Scale),
+                (IntegerDigits(source.Precision, source.Scale) >= IntegerDigits(destination.Precision, destination.Scale)
+                    && Value(source.Scale) >= Value(destination.Scale)
+                    && (source.Precision != destination.Precision || source.Scale != destination.Scale))
+                || IsSafeScaleIncrease(source, destination),
             _ => false
         };
+    }
+
+    // Adding decimal places with a fixed precision leaves fewer digits before the decimal point.
+    // That is safe when the source type still covers every value the destination can hold: the
+    // source's enforced range when known, otherwise the larger of the two declared ranges.
+    private static bool IsSafeScaleIncrease(ColumnDefinition source, DestinationColumn destination)
+    {
+        if (Value(source.Scale) <= Value(destination.Scale))
+        {
+            return false;
+        }
+
+        var requiredIntegerDigits = source.MaxIntegerDigits
+            ?? Math.Max(IntegerDigits(source.Precision, source.Scale), IntegerDigits(destination.Precision, destination.Scale));
+        return IntegerDigits(source.Precision, source.Scale) >= requiredIntegerDigits;
     }
 
     private static bool IsNarrowingOrIncompatible(ColumnDefinition source, DestinationColumn destination)

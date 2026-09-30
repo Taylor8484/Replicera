@@ -408,6 +408,83 @@ public sealed class SchemaPlannerTests
         Assert.Empty(SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy()).Changes);
     }
 
+    [Theory]
+    [InlineData(SourceType.Decimal, 38, 2, 4, 12)]
+    [InlineData(SourceType.Money, 19, 2, 4, 15)]
+    public void Plan_ExpandsWhenDataverseScaleIncreases(SourceType type, int precision, int oldScale, int newScale, int maxIntegerDigits)
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(type, precision, newScale, maxIntegerDigits),
+            NumericDestination(type, precision, oldScale),
+            new SchemaPolicy());
+
+        var change = Assert.Single(plan.Changes);
+        Assert.Equal(SchemaChangeKind.ExpandColumn, change.Kind);
+        Assert.True(change.IsAutomatic);
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_BlocksScaleIncreaseThatCouldOverflowExistingValues()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Decimal, 10, 4, maxIntegerDigits: null),
+            NumericDestination(SourceType.Decimal, 12, 2),
+            new SchemaPolicy());
+
+        Assert.Equal(SchemaChangeKind.IncompatibleColumn, Assert.Single(plan.Changes).Kind);
+        Assert.True(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_BlocksScaleIncreaseBeyondSourceRange()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Money, 19, 6, maxIntegerDigits: 15),
+            NumericDestination(SourceType.Money, 19, 4),
+            new SchemaPolicy());
+
+        Assert.True(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_StillBlocksScaleDecrease()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Decimal, 38, 2, maxIntegerDigits: 12),
+            NumericDestination(SourceType.Decimal, 38, 4),
+            new SchemaPolicy());
+
+        Assert.Equal(SchemaChangeKind.IncompatibleColumn, Assert.Single(plan.Changes).Kind);
+    }
+
+    private static TableDefinition NumericTable(SourceType type, int precision, int scale, int? maxIntegerDigits) => new(
+        "account",
+        "accounts",
+        "account",
+        [
+            new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+            new ColumnDefinition
+            {
+                LogicalName = "amount",
+                SourceType = type,
+                IsNullable = true,
+                Precision = precision,
+                Scale = scale,
+                MaxIntegerDigits = maxIntegerDigits
+            }
+        ]);
+
+    private static DestinationTable NumericDestination(SourceType type, int precision, int scale) => new(
+        "dbo",
+        "account",
+        [
+            new("accountid", SourceType.Guid, false),
+            new("amount", type, true, null, precision, scale),
+            new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+        ],
+        true);
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>

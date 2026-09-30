@@ -56,6 +56,12 @@ public static class DataverseMetadataTranslator
                 MoneyAttributeMetadata value => value.Precision,
                 _ => null
             },
+            MaxIntegerDigits = attribute switch
+            {
+                DecimalAttributeMetadata => DecimalIntegerDigits,
+                MoneyAttributeMetadata => MoneyIntegerDigits,
+                _ => null
+            },
             DateTimeBehavior = attribute is DateTimeAttributeMetadata dateTime ? MapDateTimeBehavior(dateTime) : null,
             LookupTargets = attribute is LookupAttributeMetadata lookup ? lookup.Targets ?? [] : [],
             IsCalculated = attribute.SourceType == 1,
@@ -63,6 +69,11 @@ public static class DataverseMetadataTranslator
             UnsupportedReason = unsupportedReason
         };
     }
+
+    // Dataverse limits decimal columns to +/-100,000,000,000 and currency columns to
+    // +/-922,337,203,685,477, whatever their declared precision.
+    private const int DecimalIntegerDigits = 12;
+    private const int MoneyIntegerDigits = 15;
 
     private static SourceType MapType(AttributeMetadata attribute, out string? unsupportedReason)
     {

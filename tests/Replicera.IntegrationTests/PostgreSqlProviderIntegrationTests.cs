@@ -207,6 +207,65 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition AmountTable(int scale) => new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition
+                {
+                    LogicalName = "amount",
+                    SourceType = SourceType.Decimal,
+                    IsNullable = true,
+                    Precision = 38,
+                    Scale = scale,
+                    MaxIntegerDigits = 12
+                }
+            ]);
+        var narrow = AmountTable(2);
+        await PrepareTableAsync(database.ConnectionString, narrow);
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync("integration", narrow, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["amount"] = 99999999999.25m })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var widened = AmountTable(4);
+        var plan = SchemaPlanner.Plan(widened, await schema.ReadTableAsync(widened, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.ExpandColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync("integration", widened, plan, TestCancellationToken);
+
+        var applied = await schema.ReadTableAsync(widened, TestCancellationToken);
+        Assert.NotNull(applied);
+        Assert.Equal(4, applied.Columns.Single(column => string.Equals(column.Name, "amount", StringComparison.OrdinalIgnoreCase)).Scale);
+        Assert.Empty(SchemaPlanner.Plan(widened, applied, new SchemaPolicy()).Changes);
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand("SELECT amount FROM public.account;", connection);
+        Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

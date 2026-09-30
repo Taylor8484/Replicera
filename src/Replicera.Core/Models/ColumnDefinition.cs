@@ -16,6 +16,13 @@ public sealed record ColumnDefinition
 
     public int? Scale { get; init; }
 
+    /// <summary>
+    /// The most digits a value can have before the decimal point when the source enforces a
+    /// narrower range than <see cref="Precision"/> and <see cref="Scale"/> imply. Schema planning
+    /// uses it to decide whether a scale change can be applied without losing existing values.
+    /// </summary>
+    public int? MaxIntegerDigits { get; init; }
+
     public DateTimeBehavior? DateTimeBehavior { get; init; }
 
     public IReadOnlyList<string> LookupTargets { get; init; } = [];

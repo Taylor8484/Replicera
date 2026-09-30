@@ -313,6 +313,69 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var destination = $"account_{suffix}";
+        TableDefinition AmountTable(int scale) => new TableDefinition(
+            "account",
+            "accounts",
+            destination,
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition
+                {
+                    LogicalName = "amount",
+                    SourceType = SourceType.Decimal,
+                    IsNullable = true,
+                    Precision = 38,
+                    Scale = scale,
+                    MaxIntegerDigits = 12
+                }
+            ]);
+        var narrow = AmountTable(2);
+        await PrepareTableAsync(connectionString, job, narrow);
+        var schema = new OracleSchemaManager(connectionString);
+        var writer = new OracleDestinationWriter(connectionString);
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync(job, narrow, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["amount"] = 99999999999.25m })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var widened = AmountTable(4);
+        var plan = SchemaPlanner.Plan(widened, await schema.ReadTableAsync(widened, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.ExpandColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync(job, widened, plan, TestCancellationToken);
+
+        var applied = await schema.ReadTableAsync(widened, TestCancellationToken);
+        Assert.NotNull(applied);
+        Assert.Equal(4, applied.Columns.Single(column => string.Equals(column.Name, "amount", StringComparison.OrdinalIgnoreCase)).Scale);
+        Assert.Empty(SchemaPlanner.Plan(widened, applied, new SchemaPolicy()).Changes);
+
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT AMOUNT FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(destination))}";
+        Assert.Equal(99999999999.25m, Convert.ToDecimal(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

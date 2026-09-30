@@ -69,7 +69,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await EnsureNoExternalDependenciesAsync(connection, source, plan, cancellationToken).ConfigureAwait(false);
         var requiresResync = plan.Changes.Any(change => change.IsAutomatic && (change.Kind is
                 SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable
-            || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresLobConversion(source, change.ObjectName))));
+            || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresCopyConversion(source, change.ObjectName))));
         if (requiresResync)
         {
             await ResetCheckpointBeforeDdlAsync(connection, jobName, source.LogicalName, cancellationToken).ConfigureAwait(false);
@@ -207,7 +207,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
 
         foreach (var change in plan.Changes.Where(change => change.IsAutomatic
                      && (change.Kind == SchemaChangeKind.DropColumn
-                         || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresLobConversion(source, change.ObjectName)))))
+                         || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresCopyConversion(source, change.ObjectName)))))
         {
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, change.ObjectName, cancellationToken).ConfigureAwait(false);
         }
@@ -416,15 +416,17 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         var tableName = OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName));
         var columnName = OracleIdentifier.Quote(OracleIdentifier.Normalize(column.LogicalName));
         var declaration = OracleTypeMapper.Map(column).Declaration;
-        if (!IsLob(declaration))
+        if (!RequiresCopyConversion(column))
         {
             return [$"ALTER TABLE {tableName} MODIFY ({columnName} {declaration})"];
         }
 
-        // Oracle cannot MODIFY a character column to a LOB, so copy the values into a new
-        // column and swap it into place. A copy column left by an interrupted attempt is
-        // discarded first because the original column still holds the data in that state.
-        var copyName = OracleIdentifier.Quote(OracleIdentifier.Normalize($"{column.LogicalName}_replicera_lob"));
+        // Oracle cannot MODIFY a character column to a LOB, and rejects a NUMBER change that
+        // leaves fewer digits before the decimal point on a column that holds data (ORA-01440),
+        // even when every value fits. Copy the values into a new column and swap it into place
+        // instead. A copy column left by an interrupted attempt is discarded first because the
+        // original column still holds the data in that state.
+        var copyName = OracleIdentifier.Quote(OracleIdentifier.Normalize($"{column.LogicalName}_replicera_copy"));
         return
         [
             $"BEGIN EXECUTE IMMEDIATE 'ALTER TABLE {tableName} DROP COLUMN {copyName}'; EXCEPTION WHEN OTHERS THEN IF SQLCODE <> -904 THEN RAISE; END IF; END;",
@@ -438,10 +440,12 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
     internal static string BuildRelaxNullability(TableDefinition table, string columnName) =>
         $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} MODIFY ({OracleIdentifier.Quote(OracleIdentifier.Normalize(columnName))} NULL)";
 
-    private static bool RequiresLobConversion(TableDefinition table, string logicalName) =>
-        IsLob(OracleTypeMapper.Map(FindColumn(table, logicalName)).Declaration);
+    private static bool RequiresCopyConversion(TableDefinition table, string logicalName) =>
+        RequiresCopyConversion(FindColumn(table, logicalName));
 
-    private static bool IsLob(string declaration) => declaration is "NCLOB" or "CLOB";
+    private static bool RequiresCopyConversion(ColumnDefinition column) =>
+        column.SourceType is SourceType.Decimal or SourceType.Money
+        || OracleTypeMapper.Map(column).Declaration is "NCLOB" or "CLOB";
 
     private static ColumnDefinition FindColumn(TableDefinition table, string logicalName) =>
         table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));

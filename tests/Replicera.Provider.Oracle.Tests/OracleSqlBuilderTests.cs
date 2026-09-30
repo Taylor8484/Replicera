@@ -83,13 +83,32 @@ public sealed class OracleSqlBuilderTests
         var statements = OracleSchemaManager.BuildExpandColumn(TextTable(4_000), "name");
 
         Assert.Equal(5, statements.Count);
-        Assert.Contains("DROP COLUMN \"NAME_REPLICERA_LOB\"", statements[0], StringComparison.Ordinal);
+        Assert.Contains("DROP COLUMN \"NAME_REPLICERA_COPY\"", statements[0], StringComparison.Ordinal);
         Assert.Contains("SQLCODE <> -904", statements[0], StringComparison.Ordinal);
-        Assert.Equal("ALTER TABLE \"ACCOUNT\" ADD (\"NAME_REPLICERA_LOB\" NCLOB NULL)", statements[1]);
-        Assert.Equal("UPDATE \"ACCOUNT\" SET \"NAME_REPLICERA_LOB\" = \"NAME\"", statements[2]);
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" ADD (\"NAME_REPLICERA_COPY\" NCLOB NULL)", statements[1]);
+        Assert.Equal("UPDATE \"ACCOUNT\" SET \"NAME_REPLICERA_COPY\" = \"NAME\"", statements[2]);
         Assert.Equal("ALTER TABLE \"ACCOUNT\" DROP COLUMN \"NAME\"", statements[3]);
-        Assert.Equal("ALTER TABLE \"ACCOUNT\" RENAME COLUMN \"NAME_REPLICERA_LOB\" TO \"NAME\"", statements[4]);
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" RENAME COLUMN \"NAME_REPLICERA_COPY\" TO \"NAME\"", statements[4]);
         Assert.DoesNotContain(statements, statement => statement.Contains("MODIFY", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BuildExpandColumn_CopiesNumericColumnsBecauseOracleRejectsScaleChangesOnData()
+    {
+        var table = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "amount", SourceType = SourceType.Decimal, IsNullable = true, Precision = 38, Scale = 4 }
+            ]);
+
+        var statements = OracleSchemaManager.BuildExpandColumn(table, "amount");
+
+        Assert.Equal(5, statements.Count);
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" ADD (\"AMOUNT_REPLICERA_COPY\" NUMBER(38,4) NULL)", statements[1]);
+        Assert.Equal("UPDATE \"ACCOUNT\" SET \"AMOUNT_REPLICERA_COPY\" = \"AMOUNT\"", statements[2]);
     }
 
     private static TableDefinition TextTable(int maxLength) => new(

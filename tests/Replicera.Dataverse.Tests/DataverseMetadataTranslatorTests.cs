@@ -26,6 +26,20 @@ public sealed class DataverseMetadataTranslatorTests
     }
 
     [Fact]
+    public void TranslateColumn_RecordsDataverseNumericRanges()
+    {
+        var amount = DataverseMetadataTranslator.TranslateColumn(
+            new DecimalAttributeMetadata { LogicalName = "amount", Precision = 4 },
+            "accountid");
+        var revenue = DataverseMetadataTranslator.TranslateColumn(
+            new MoneyAttributeMetadata { LogicalName = "revenue", Precision = 2 },
+            "accountid");
+
+        Assert.Equal((38, 4, 12), (amount.Precision, amount.Scale, amount.MaxIntegerDigits));
+        Assert.Equal((19, 2, 15), (revenue.Precision, revenue.Scale, revenue.MaxIntegerDigits));
+    }
+
+    [Fact]
     public void TranslateColumn_MarksUnknownTypeUnsupported()
     {
         var attribute = new ImageAttributeMetadata { LogicalName = "entityimage" };
