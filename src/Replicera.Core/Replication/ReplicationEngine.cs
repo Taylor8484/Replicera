@@ -78,6 +78,7 @@ public sealed partial class ReplicationEngine
             long updated = 0;
             long deleted = 0;
             string? terminalCheckpoint = null;
+            var sourceHasMoreRecords = false;
 
             await foreach (var page in source.ReadChangesAsync(
                                table,
@@ -99,6 +100,7 @@ public sealed partial class ReplicationEngine
                 updated += applied.Updated;
                 deleted += applied.Deleted;
                 terminalCheckpoint = page.DataCheckpoint;
+                sourceHasMoreRecords = page.HasMoreRecords;
                 LogPageApplied(
                     logger,
                     pages,
@@ -110,7 +112,14 @@ public sealed partial class ReplicationEngine
                     applied.Deleted);
             }
 
-            if (terminalCheckpoint is null)
+            if (sourceHasMoreRecords)
+            {
+                throw new RepliceraException(
+                    ErrorCategory.Synchronization,
+                    "The source stopped before its final page; the checkpoint was not advanced.");
+            }
+
+            if (string.IsNullOrWhiteSpace(terminalCheckpoint))
             {
                 throw new RepliceraException(
                     ErrorCategory.Synchronization,

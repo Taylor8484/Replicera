@@ -108,6 +108,40 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_DoesNotCommitWhenSourceStopsBeforeItsFinalPage()
+    {
+        var session = new FakeSession();
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, true, "token")]),
+            new FakeDestination(session),
+            new FakeStateStore(null));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Synchronization, error.Category);
+        Assert.Null(session.CommittedCheckpoint);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task SyncAsync_DoesNotCommitAnEmptyCheckpoint(string checkpoint)
+    {
+        var session = new FakeSession();
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, false, checkpoint)]),
+            new FakeDestination(session),
+            new FakeStateStore(null));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Synchronization, error.Category);
+        Assert.Null(session.CommittedCheckpoint);
+    }
+
+    [Fact]
     public async Task SyncAsync_MarksExpiredCheckpointForResync()
     {
         var state = new FakeStateStore(
