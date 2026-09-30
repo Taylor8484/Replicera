@@ -309,6 +309,44 @@ public sealed class SchemaPlannerTests
         Assert.Empty(SchemaPlanner.Plan(SourceTable(), destination, policy).Changes);
     }
 
+    [Fact]
+    public void Plan_TreatsUnboundedDestinationStringAsCompatibleWithAnySourceLength()
+    {
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("name", SourceType.String, true, null),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy());
+
+        Assert.Empty(plan.Changes);
+    }
+
+    [Fact]
+    public void Plan_StillBlocksBoundedDestinationStringNarrowing()
+    {
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("name", SourceType.String, true, 200),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy());
+
+        var change = Assert.Single(plan.Changes);
+        Assert.Equal(SchemaChangeKind.IncompatibleColumn, change.Kind);
+        Assert.True(change.IsBlocking);
+    }
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>

@@ -67,8 +67,10 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await using var connection = new OracleConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await EnsureNoExternalDependenciesAsync(connection, source, plan, cancellationToken).ConfigureAwait(false);
-        if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+        var requiresResync = plan.Changes.Any(change => change.IsAutomatic && (change.Kind is
+                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable
+            || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresLobConversion(source, change.ObjectName))));
+        if (requiresResync)
         {
             await ResetCheckpointBeforeDdlAsync(connection, jobName, source.LogicalName, cancellationToken).ConfigureAwait(false);
         }
@@ -84,7 +86,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
                 SchemaChangeKind.AddManagedColumn => [BuildAddManagedColumn(source, change.ObjectName)],
                 SchemaChangeKind.RenameColumn => [BuildRenameColumn(source, change.ObjectName, change.NewObjectName!)],
                 SchemaChangeKind.DropColumn => [BuildDropColumn(source, change.ObjectName)],
-                SchemaChangeKind.ExpandColumn => [BuildAlterColumn(source, change.ObjectName)],
+                SchemaChangeKind.ExpandColumn => BuildExpandColumn(source, change.ObjectName),
                 _ => []
             };
             foreach (var sql in statements)
@@ -96,8 +98,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await using var transaction = connection.BeginTransaction();
         var schema = await GetCurrentSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         var tableId = await EnsureOwnershipAsync(connection, transaction, schema, jobName, source, cancellationToken).ConfigureAwait(false);
-        if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+        if (requiresResync)
         {
             await using var reset = connection.CreateCommand();
             reset.Transaction = transaction;
@@ -203,7 +204,9 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, null, cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (var change in plan.Changes.Where(change => change.IsAutomatic && change.Kind == SchemaChangeKind.DropColumn))
+        foreach (var change in plan.Changes.Where(change => change.IsAutomatic
+                     && (change.Kind == SchemaChangeKind.DropColumn
+                         || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresLobConversion(source, change.ObjectName)))))
         {
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, change.ObjectName, cancellationToken).ConfigureAwait(false);
         }
@@ -406,11 +409,38 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
     private static string BuildRenameColumn(TableDefinition table, string oldName, string newName) =>
         $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} RENAME COLUMN {OracleIdentifier.Quote(OracleIdentifier.Normalize(oldName))} TO {OracleIdentifier.Quote(OracleIdentifier.Normalize(newName))}";
 
-    private static string BuildAlterColumn(TableDefinition table, string logicalName)
+    internal static List<string> BuildExpandColumn(TableDefinition table, string logicalName)
     {
-        var column = table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
-        return $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} MODIFY ({OracleIdentifier.Quote(OracleIdentifier.Normalize(column.LogicalName))} {OracleTypeMapper.Map(column).Declaration})";
+        var column = FindColumn(table, logicalName);
+        var tableName = OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName));
+        var columnName = OracleIdentifier.Quote(OracleIdentifier.Normalize(column.LogicalName));
+        var declaration = OracleTypeMapper.Map(column).Declaration;
+        if (!IsLob(declaration))
+        {
+            return [$"ALTER TABLE {tableName} MODIFY ({columnName} {declaration})"];
+        }
+
+        // Oracle cannot MODIFY a character column to a LOB, so copy the values into a new
+        // column and swap it into place. A copy column left by an interrupted attempt is
+        // discarded first because the original column still holds the data in that state.
+        var copyName = OracleIdentifier.Quote(OracleIdentifier.Normalize($"{column.LogicalName}_replicera_lob"));
+        return
+        [
+            $"BEGIN EXECUTE IMMEDIATE 'ALTER TABLE {tableName} DROP COLUMN {copyName}'; EXCEPTION WHEN OTHERS THEN IF SQLCODE <> -904 THEN RAISE; END IF; END;",
+            $"ALTER TABLE {tableName} ADD ({copyName} {declaration} NULL)",
+            $"UPDATE {tableName} SET {copyName} = {columnName}",
+            $"ALTER TABLE {tableName} DROP COLUMN {columnName}",
+            $"ALTER TABLE {tableName} RENAME COLUMN {copyName} TO {columnName}"
+        ];
     }
+
+    private static bool RequiresLobConversion(TableDefinition table, string logicalName) =>
+        IsLob(OracleTypeMapper.Map(FindColumn(table, logicalName)).Declaration);
+
+    private static bool IsLob(string declaration) => declaration is "NCLOB" or "CLOB";
+
+    private static ColumnDefinition FindColumn(TableDefinition table, string logicalName) =>
+        table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

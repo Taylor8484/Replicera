@@ -246,7 +246,8 @@ public static class SchemaPlanner
     {
         return source.SourceType switch
         {
-            SourceType.String => Length(source.MaxLength) < Length(destination.MaxLength),
+            SourceType.String => destination.MaxLength is not null
+                && Length(source.MaxLength) < destination.MaxLength.Value,
             SourceType.Decimal or SourceType.Money =>
                 IntegerDigits(source.Precision, source.Scale) < IntegerDigits(destination.Precision, destination.Scale)
                 || Value(source.Scale) < Value(destination.Scale),

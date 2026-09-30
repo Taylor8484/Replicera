@@ -170,6 +170,62 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task LongStringColumns_ReplanCleanlyAndWidenIntoNclobWithoutLosingData()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var schema = new OracleSchemaManager(connectionString);
+
+        var longTable = AccountsTable($"account_long_{suffix}", nameLength: 4_000);
+        await PrepareTableAsync(connectionString, $"job_long_{suffix}", longTable);
+        var replan = SchemaPlanner.Plan(longTable, await schema.ReadTableAsync(longTable, TestCancellationToken), new());
+        Assert.False(replan.HasBlockingChanges);
+        Assert.Empty(replan.Changes);
+
+        var narrowTable = AccountsTable($"account_wide_{suffix}", nameLength: 1_000);
+        var job = $"job_wide_{suffix}";
+        await PrepareTableAsync(connectionString, job, narrowTable);
+        var id = Guid.NewGuid();
+        var writer = new OracleDestinationWriter(connectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(job, narrowTable, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(id, "Preserved", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var widenedTable = AccountsTable(narrowTable.DestinationName, nameLength: 4_000);
+        var widen = SchemaPlanner.Plan(widenedTable, await schema.ReadTableAsync(widenedTable, TestCancellationToken), new());
+        Assert.Contains(widen.Changes, change => change.Kind == SchemaChangeKind.ExpandColumn && change.ObjectName == "name");
+        await schema.ApplySchemaPlanAsync(job, widenedTable, widen, TestCancellationToken);
+        Assert.Empty(SchemaPlanner.Plan(widenedTable, await schema.ReadTableAsync(widenedTable, TestCancellationToken), new()).Changes);
+
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using (var type = connection.CreateCommand())
+        {
+            type.CommandText = $"SELECT DATA_TYPE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = '{OracleIdentifier.Normalize(widenedTable.DestinationName)}' AND COLUMN_NAME = 'NAME'";
+            Assert.Equal("NCLOB", await type.ExecuteScalarAsync(TestCancellationToken));
+        }
+
+        await using (var rows = connection.CreateCommand())
+        {
+            rows.CommandText = $"SELECT NAME FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(widenedTable.DestinationName))}";
+            Assert.Equal("Preserved", await rows.ExecuteScalarAsync(TestCancellationToken));
+        }
+
+        var state = await new OracleReplicationStateStore(connectionString)
+            .GetTableStateAsync(job, widenedTable.LogicalName, TestCancellationToken);
+        Assert.NotNull(state);
+        Assert.Null(state.DataCheckpoint);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();
