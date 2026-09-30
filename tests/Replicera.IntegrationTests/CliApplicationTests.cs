@@ -74,6 +74,60 @@ public sealed class CliApplicationTests
         Assert.Equal("0.1.0", output.ToString().Trim());
     }
 
+    [Theory]
+    [InlineData("sync", "--help")]
+    [InlineData("worker", "--job", "nightly", "-h")]
+    [InlineData("init", "--help")]
+    [InlineData("tables", "add", "account", "--help")]
+    public async Task Help_AnywhereInArgumentsPrintsUsageWithoutRunningCommand(params string[] arguments)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"replicera-help-{Guid.NewGuid():N}.json");
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync([.. arguments, "--config", path], output, error, CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Usage:", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(string.Empty, error.ToString());
+        Assert.False(File.Exists(path));
+    }
+
+    [Theory]
+    [InlineData("Unknown option '--tabel'", "sync", "--tabel", "contact", "--full")]
+    [InlineData("Unknown option '--force'", "init", "--force")]
+    [InlineData("Unknown option '--interval'", "worker", "--interval", "00:05:00")]
+    [InlineData("'--job' was specified more than once", "sync", "--job", "a", "--job", "b")]
+    [InlineData("'--full' was specified more than once", "sync", "--full", "--full")]
+    [InlineData("Unexpected argument 'contact'", "sync", "contact")]
+    [InlineData("requires exactly 1 table logical name", "inspect", "--json")]
+    [InlineData("requires exactly 1 table logical name", "tables", "add", "account", "contact")]
+    [InlineData("'--job' requires a value", "status", "--job")]
+    public async Task InvalidArguments_AreRejectedBeforeCommandRuns(string expectedError, params string[] arguments)
+    {
+        using var error = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync(
+            [.. arguments, "--config", Path.Combine(Path.GetTempPath(), $"replicera-missing-{Guid.NewGuid():N}.json")],
+            TextWriter.Null,
+            error,
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains(expectedError, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnknownCommand_ReturnsInvalidInput()
+    {
+        using var error = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync(["synchronize"], TextWriter.Null, error, CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("unknown command", error.ToString(), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Init_CreatesConfigurationWithoutOverwriting()
     {
@@ -161,7 +215,7 @@ public sealed class CliApplicationTests
                 TextWriter.Null,
                 CancellationToken.None);
             var removeExit = await CliApplication.RunAsync(
-                ["tables", "remove", "contact", "--job", "development", "--config", path],
+                ["tables", "remove", "--job", "development", "contact", "--config", path],
                 TextWriter.Null,
                 TextWriter.Null,
                 CancellationToken.None);
