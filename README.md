@@ -28,14 +28,14 @@ Published builds use the executable name `replicera`. Run `replicera --version` 
 
 ## Release Packages
 
-Pushing a `v*` tag builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files, and creates a GitHub release. Each archive contains the executable, README, operations guide, license, and third-party notices. Packages can also be built locally:
+Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, and third-party notices. Packages can also be built locally:
 
 ```sh
 python3 scripts/package_release.py --version 0.1.0 --runtime linux-x64
 python3 scripts/package_release.py --version 0.1.0 --runtime win-x64
 ```
 
-Verify the adjacent `.sha256` file, extract the archive into a versioned directory, and invoke `replicera` (`replicera.exe` on Windows) from that directory. Upgrade by extracting the new version beside the old one, reusing the external configuration and environment variables, and switching the scheduled command after `replicera --version` succeeds.
+Verify the adjacent `.sha256` file, and optionally the provenance with `gh attestation verify <archive> --repo Taylor8484/Replicera`, then extract the archive into a versioned directory, and invoke `replicera` (`replicera.exe` on Windows) from that directory. Upgrade by extracting the new version beside the old one, reusing the external configuration and environment variables, and switching the scheduled command after `replicera --version` succeeds.
 
 Run the database integration suites with Docker:
 

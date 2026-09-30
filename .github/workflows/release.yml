@@ -5,53 +5,94 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: global.json
+      - name: Validate tag
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$TAG_NAME" =~ $semver ]]; then
+            echo "::error::Release tags must be semantic versions such as v1.2.3 or v1.2.3-rc.1."
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Release tags must point to a commit on main."
+            exit 1
+          fi
+          version="${TAG_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+      - run: dotnet restore Replicera.sln --locked-mode
+      - run: dotnet build Replicera.sln --no-restore --configuration Release
+      - run: dotnet test Replicera.sln --no-build --configuration Release --filter "Category!=Credentialed&Category!=SqlServerIntegration&Category!=PostgreSqlIntegration&Category!=OracleIntegration&Category!=DataverseSqlEndToEnd&Category!=DataverseOracleEndToEnd&Category!=Scale"
+
   package:
+    needs: verify
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             runtime: linux-x64
             executable: replicera
+            extension: tar.gz
           - os: windows-latest
             runtime: win-x64
             executable: replicera.exe
+            extension: zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      RUNTIME: ${{ matrix.runtime }}
+      EXECUTABLE: ${{ matrix.executable }}
+      EXTENSION: ${{ matrix.extension }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
-      - name: Derive version
-        id: version
-        shell: pwsh
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          $version = $env:TAG_NAME.TrimStart('v')
-          "version=$version" >> $env:GITHUB_OUTPUT
       - name: Package release
-        run: python scripts/package_release.py --version ${{ steps.version.outputs.version }} --runtime ${{ matrix.runtime }}
-      - name: Select archive
-        id: archive
-        shell: pwsh
-        run: |
-          $extension = if ('${{ matrix.runtime }}'.StartsWith('win-')) { 'zip' } else { 'tar.gz' }
-          "path=artifacts/packages/replicera-${{ steps.version.outputs.version }}-${{ matrix.runtime }}.$extension" >> $env:GITHUB_OUTPUT
+        shell: bash
+        run: python scripts/package_release.py --version "$VERSION" --runtime "$RUNTIME"
       - name: Smoke test packaged executable
         shell: pwsh
         run: |
-          if ('${{ matrix.runtime }}'.StartsWith('win-')) {
-            Expand-Archive '${{ steps.archive.outputs.path }}' -DestinationPath artifacts/extracted
+          $package = "replicera-$env:VERSION-$env:RUNTIME"
+          $archive = "artifacts/packages/$package.$env:EXTENSION"
+          New-Item -ItemType Directory -Force -Path artifacts/extracted | Out-Null
+          if ($env:EXTENSION -eq 'zip') {
+            Expand-Archive $archive -DestinationPath artifacts/extracted
           } else {
-            New-Item -ItemType Directory -Force -Path artifacts/extracted | Out-Null
-            tar -xzf '${{ steps.archive.outputs.path }}' -C artifacts/extracted
+            tar -xzf $archive -C artifacts/extracted
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          & (Join-Path "artifacts/extracted/replicera-${{ steps.version.outputs.version }}-${{ matrix.runtime }}" "${{ matrix.executable }}") --version
+          & (Join-Path "artifacts/extracted/$package" $env:EXECUTABLE) --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-${{ matrix.runtime }}
@@ -59,17 +100,32 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: package
+    needs: [verify, package]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           pattern: release-*
           path: release-files
           merge-multiple: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release-files/*.tar.gz
+            release-files/*.zip
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "${GITHUB_REF_NAME}" release-files/* --verify-tag --generate-notes
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          prerelease_flag=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" release-files/* --verify-tag --generate-notes "${prerelease_flag[@]}"
