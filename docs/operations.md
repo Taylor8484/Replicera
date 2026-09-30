@@ -46,13 +46,15 @@ Run Replicera as a dedicated Dataverse application user. The recommended pump id
 
 `inspect` only reports whether change tracking must be enabled. `sync` performs the metadata update when the job's change-tracking policy allows it. If metadata mutation is managed outside Replicera, omit System Customizer, enable tracking administratively, and configure the job to require it already enabled. Use a dedicated non-production identity for credentialed validation.
 
-To bootstrap the reader role, temporarily assign System Administrator to the application user and run:
+To bootstrap the reader role, temporarily assign System Administrator to the application user and choose the tables the role should cover. The recommended form lists the replicated tables, and any lookup target tables you also want readable, in a JSON array of logical names (see `examples/bootstrap-tables.example.json`):
 
 ```sh
-replicera source bootstrap-permissions --name <source>
+replicera source bootstrap-permissions --name <source> --tables-file bootstrap-tables.json
 ```
 
-The command creates or updates `Replicera Pump Reader`, grants Organization-level Read for every current table whose Read privilege supports that depth, and assigns the role to the calling application user. It also assigns the built-in System Customizer role. It preserves unrelated privileges already present in a same-named role and is safe to rerun. New tables are not covered automatically; rerun bootstrap after adding tables. Remove System Administrator manually, leave System Customizer and Replicera Pump Reader assigned, and run `inspect` or `sync` to verify the steady-state permissions. Replicera never removes its own administrator role.
+To grant Read on every table in the environment instead, pass `--all-tables`. This gives the pump identity organization-wide read access to all Dataverse data, including tables that are never replicated, so a leaked credential exposes the whole environment; use it only where that exposure is acceptable. One of `--tables-file` or `--all-tables` is required.
+
+The command creates or updates `Replicera Pump Reader`, grants Organization-level Read on the selected tables, and assigns the role to the calling application user. With `--tables-file`, every listed table must exist in published metadata and support Organization-level Read, otherwise the command fails without changing the role. It also assigns the built-in System Customizer role. It preserves privileges already present in a same-named role, including Read privileges granted by an earlier run, and is safe to rerun; to narrow an existing role, remove its extra privileges in Dataverse or bootstrap a new role with `--role-name`. New tables are not covered automatically; add them to the tables file and rerun bootstrap. Remove System Administrator manually, leave System Customizer and Replicera Pump Reader assigned, and run `inspect` or `sync` to verify the steady-state permissions. Replicera never removes its own administrator role.
 
 For release validation, `scripts/verify-expired-dataverse-checkpoint.sh` consumes the ignored retained-checkpoint state. Run it only after the `verifyAfterUtc` recorded in that file; it verifies that Dataverse reports the natural expiry as a full-resynchronization condition without printing the token.
 

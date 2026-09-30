@@ -21,10 +21,23 @@ internal static class RuntimeCommands
         string configPath,
         string? sourceName,
         string? roleName,
+        string? tablesFile,
+        bool allTables,
         TextWriter output,
         bool structuredOutput,
         CancellationToken cancellationToken)
     {
+        var scope = (tablesFile, allTables) switch
+        {
+            (not null, true) => throw new RepliceraException(
+                ErrorCategory.Configuration,
+                "Specify either --tables-file or --all-tables, not both."),
+            (not null, false) => await LoadPermissionTablesAsync(tablesFile, cancellationToken).ConfigureAwait(false),
+            (null, true) => PermissionScope.AllTables,
+            (null, false) => throw new RepliceraException(
+                ErrorCategory.Configuration,
+                "Specify --tables-file <path> to grant Read on the listed tables, or --all-tables to grant Read on every table in the environment.")
+        };
         var configuration = await ConfigurationFile.LoadAsync(configPath, cancellationToken).ConfigureAwait(false);
         var source = sourceName is null
             ? configuration.Sources.Count == 1
@@ -35,6 +48,7 @@ internal static class RuntimeCommands
         await using var service = DataverseClientFactory.Create(source, new EnvironmentSecretResolver());
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             roleName ?? DataversePermissionBootstrapper.DefaultRoleName,
+            scope,
             cancellationToken).ConfigureAwait(false);
         if (structuredOutput)
         {
@@ -42,14 +56,45 @@ internal static class RuntimeCommands
         }
         else
         {
-            await output.WriteLineAsync(
-                $"Role '{result.RoleName}' {(result.RoleCreated ? "created" : "updated")} with {result.TableReadPrivileges} organization-level table Read privileges.").ConfigureAwait(false);
+            await output.WriteLineAsync(result.AllTables
+                ? $"Role '{result.RoleName}' {(result.RoleCreated ? "created" : "updated")} with organization-level Read on all {result.TableReadPrivileges} tables in the environment."
+                : $"Role '{result.RoleName}' {(result.RoleCreated ? "created" : "updated")} with organization-level Read on {result.Tables.Count} tables: {string.Join(", ", result.Tables)}.").ConfigureAwait(false);
             await output.WriteLineAsync(result.RoleAssigned ? "Role assigned to the current application user." : "Role was already assigned to the current application user.").ConfigureAwait(false);
             await output.WriteLineAsync(result.SystemCustomizerAssigned ? "System Customizer assigned to the current application user." : "System Customizer was already assigned to the current application user.").ConfigureAwait(false);
             await output.WriteLineAsync("Confirm System Customizer is assigned, remove temporary System Administrator, then run inspect or sync.").ConfigureAwait(false);
         }
 
         return (int)ExitCode.Success;
+    }
+
+    internal static async Task<PermissionScope> LoadPermissionTablesAsync(string path, CancellationToken cancellationToken)
+    {
+        string[]? tables;
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            tables = await JsonSerializer.DeserializeAsync<string[]>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new RepliceraException(ErrorCategory.Configuration, $"Unable to read tables file '{path}'.", exception);
+        }
+        catch (JsonException exception)
+        {
+            throw new RepliceraException(
+                ErrorCategory.Configuration,
+                $"Tables file '{path}' must contain a JSON array of table logical names, for example [\"account\", \"contact\"].",
+                exception);
+        }
+
+        if (tables is null || tables.Length == 0 || tables.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new RepliceraException(
+                ErrorCategory.Configuration,
+                $"Tables file '{path}' must list at least one table logical name and must not contain blank entries.");
+        }
+
+        return PermissionScope.ForTables(tables);
     }
 
     public static async Task<int> InspectAsync(

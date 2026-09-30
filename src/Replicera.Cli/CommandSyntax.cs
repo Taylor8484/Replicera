@@ -15,7 +15,7 @@ internal sealed record CommandSyntax(
             ["--name", "--url", "--tenant-id", "--client-id", "--secret-env", "--auth", "--certificate-password-env"],
             ["--interactive"]),
         ["source list"] = Define(),
-        ["source bootstrap-permissions"] = Define(["--name", "--role-name"], ["--json"]),
+        ["source bootstrap-permissions"] = Define(["--name", "--role-name", "--tables-file"], ["--all-tables", "--json"]),
         ["destination add"] = Define(["--name", "--connection-env", "--provider"], ["--interactive"]),
         ["destination list"] = Define(),
         ["job add"] = Define(

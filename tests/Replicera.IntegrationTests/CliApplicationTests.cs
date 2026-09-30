@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Replicera.Cli;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 
 namespace Replicera.IntegrationTests;
 
@@ -115,6 +116,68 @@ public sealed class CliApplicationTests
 
         Assert.Equal(2, exitCode);
         Assert.Contains(expectedError, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BootstrapPermissions_RequiresExplicitTableScope()
+    {
+        var tablesFile = Path.Combine(Path.GetTempPath(), $"replicera-tables-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(tablesFile, "[\"account\"]");
+        try
+        {
+            using var missingScopeError = new StringWriter();
+            var missingScopeExit = await CliApplication.RunAsync(
+                ["source", "bootstrap-permissions", "--name", "dev"],
+                TextWriter.Null,
+                missingScopeError,
+                CancellationToken.None);
+            using var bothScopesError = new StringWriter();
+            var bothScopesExit = await CliApplication.RunAsync(
+                ["source", "bootstrap-permissions", "--tables-file", tablesFile, "--all-tables"],
+                TextWriter.Null,
+                bothScopesError,
+                CancellationToken.None);
+
+            Assert.Equal(2, missingScopeExit);
+            Assert.Contains("--tables-file", missingScopeError.ToString(), StringComparison.Ordinal);
+            Assert.Contains("--all-tables", missingScopeError.ToString(), StringComparison.Ordinal);
+            Assert.Equal(2, bothScopesExit);
+            Assert.Contains("not both", bothScopesError.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(tablesFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("[\"account\", \"contact\", \"Account\"]", null)]
+    [InlineData("[]", "at least one table")]
+    [InlineData("[\"account\", \"\"]", "at least one table")]
+    [InlineData("{\"tables\": [\"account\"]}", "JSON array")]
+    [InlineData("not json", "JSON array")]
+    public async Task PermissionTablesFile_AcceptsOnlyJsonArrayOfTableNames(string content, string? expectedError)
+    {
+        var tablesFile = Path.Combine(Path.GetTempPath(), $"replicera-tables-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(tablesFile, content);
+        try
+        {
+            if (expectedError is null)
+            {
+                var scope = await RuntimeCommands.LoadPermissionTablesAsync(tablesFile, CancellationToken.None);
+                Assert.Equal(["account", "contact"], scope.Tables);
+                return;
+            }
+
+            var error = await Assert.ThrowsAsync<RepliceraException>(() =>
+                RuntimeCommands.LoadPermissionTablesAsync(tablesFile, CancellationToken.None));
+            Assert.Equal(ErrorCategory.Configuration, error.Category);
+            Assert.Contains(expectedError, error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(tablesFile);
+        }
     }
 
     [Fact]
