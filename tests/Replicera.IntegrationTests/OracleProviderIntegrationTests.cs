@@ -722,6 +722,60 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task FailureAfterCreateTable_LeavesTableManagedForTheNextRun()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_{suffix}");
+        var tableName = OracleIdentifier.Normalize(table.DestinationName);
+        var triggerName = OracleIdentifier.Quote(OracleIdentifier.Normalize($"block_{suffix}"));
+        await new OracleMetadataStore(connectionString).EnsureCreatedAsync(TestCancellationToken);
+        var schema = new OracleSchemaManager(connectionString);
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using (var trigger = connection.CreateCommand())
+        {
+            trigger.CommandText = $"""
+                CREATE OR REPLACE TRIGGER {triggerName} BEFORE ALTER ON SCHEMA
+                BEGIN
+                    IF ORA_DICT_OBJ_NAME = '{tableName}' THEN
+                        RAISE_APPLICATION_ERROR(-20001, 'Simulated failure after CREATE TABLE.');
+                    END IF;
+                END;
+                """;
+            _ = await trigger.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        try
+        {
+            var create = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new());
+            Assert.Contains(create.Changes, change => change.Kind == SchemaChangeKind.CreateTable);
+            await Assert.ThrowsAsync<OracleException>(() => schema.ApplySchemaPlanAsync(job, table, create, TestCancellationToken));
+        }
+        finally
+        {
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = $"DROP TRIGGER {triggerName}";
+            _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var partial = await schema.ReadTableAsync(table, TestCancellationToken);
+        Assert.NotNull(partial);
+        Assert.True(partial.IsManaged);
+        var resume = SchemaPlanner.Plan(table, partial, new());
+        Assert.False(resume.HasBlockingChanges);
+        await schema.ApplySchemaPlanAsync(job, table, resume, TestCancellationToken);
+        Assert.Empty(SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new()).Changes);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

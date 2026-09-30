@@ -71,6 +71,21 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         var requiresResync = plan.Changes.Any(change => change.IsAutomatic && (change.Kind is
                 SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable or SchemaChangeKind.ReplaceColumn
             || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresCopyConversion(source, change.ObjectName))));
+        if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is SchemaChangeKind.CreateTable or SchemaChangeKind.RecreateTable))
+        {
+            // Oracle DDL commits immediately, so record ownership first. A failure after CREATE
+            // TABLE then leaves a table Replicera still recognizes instead of an unmanaged one.
+            await using var ownership = connection.BeginTransaction();
+            _ = await EnsureOwnershipAsync(
+                connection,
+                ownership,
+                await GetCurrentSchemaAsync(connection, cancellationToken).ConfigureAwait(false),
+                jobName,
+                source,
+                cancellationToken).ConfigureAwait(false);
+            await ownership.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         if (requiresResync)
         {
             await ResetCheckpointBeforeDdlAsync(connection, jobName, source.LogicalName, cancellationToken).ConfigureAwait(false);
