@@ -119,6 +119,76 @@ public sealed class ConfigurationValidatorTests
         Assert.Contains(issues, issue => issue.Message.Contains("Multiple columns", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("Server=db;Password=hunter2")]
+    [InlineData("REPLICERA SECRET")]
+    [InlineData("1SECRET")]
+    [InlineData("secret-value")]
+    public void Validate_RejectsEnvironmentVariableNamesThatAreNotIdentifiersWithoutEchoingThem(string name)
+    {
+        var configuration = ValidConfiguration();
+        configuration = configuration with
+        {
+            Sources =
+            [
+                configuration.Sources[0] with
+                {
+                    Authentication = configuration.Sources[0].Authentication with
+                    {
+                        SecretEnvironmentVariable = name,
+                        CertificatePasswordEnvironmentVariable = name
+                    }
+                }
+            ],
+            Destinations = [configuration.Destinations[0] with { ConnectionStringEnvironmentVariable = name }]
+        };
+
+        var issues = ConfigurationValidator.Validate(configuration);
+
+        Assert.Equal(
+            [
+                "sources[0].authentication.secretEnvironmentVariable",
+                "sources[0].authentication.certificatePasswordEnvironmentVariable",
+                "destinations[0].connectionStringEnvironmentVariable"
+            ],
+            issues.Select(issue => issue.Path));
+        Assert.All(issues, issue => Assert.DoesNotContain(name, issue.Message, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("REPLICERA_SECRET")]
+    [InlineData("_secret2")]
+    [InlineData("a")]
+    public void Validate_AcceptsPortableEnvironmentVariableNames(string name)
+    {
+        var configuration = ValidConfiguration();
+        configuration = configuration with
+        {
+            Destinations = [configuration.Destinations[0] with { ConnectionStringEnvironmentVariable = name }]
+        };
+
+        Assert.Empty(ConfigurationValidator.Validate(configuration));
+    }
+
+    [Fact]
+    public void Validate_RejectsBlankCertificatePasswordVariableWhenSpecified()
+    {
+        var configuration = ValidConfiguration();
+        configuration = configuration with
+        {
+            Sources =
+            [
+                configuration.Sources[0] with
+                {
+                    Authentication = configuration.Sources[0].Authentication with { CertificatePasswordEnvironmentVariable = " " }
+                }
+            ]
+        };
+
+        var issue = Assert.Single(ConfigurationValidator.Validate(configuration));
+        Assert.Equal("sources[0].authentication.certificatePasswordEnvironmentVariable", issue.Path);
+    }
+
     private static RepliceraConfiguration ValidConfiguration() => new()
     {
         Sources =

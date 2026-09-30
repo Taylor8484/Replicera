@@ -408,6 +408,35 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task DestinationAdd_ValueInsteadOfVariableNameIsRejectedWithoutSavingOrEchoingIt()
+    {
+        var directory = Directory.CreateTempSubdirectory("replicera-test-");
+        var path = Path.Combine(directory.FullName, "replicera.json");
+        const string secret = "Server=db;Password=hunter2";
+        try
+        {
+            _ = await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None);
+            var before = await File.ReadAllTextAsync(path);
+            using var error = new StringWriter();
+
+            var exitCode = await CliApplication.RunAsync(
+                ["destination", "add", "--name", "sql", "--connection-env", secret, "--config", path],
+                TextWriter.Null,
+                error,
+                CancellationToken.None);
+
+            Assert.Equal(2, exitCode);
+            Assert.Contains("connectionStringEnvironmentVariable", error.ToString(), StringComparison.Ordinal);
+            Assert.DoesNotContain("hunter2", error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(before, await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
     public async Task SourceAdd_DuplicateNameFailsWithoutChangingConfiguration()
     {
         var directory = Directory.CreateTempSubdirectory("replicera-test-");

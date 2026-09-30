@@ -27,6 +27,10 @@ public static class ConfigurationValidator
             }
 
             ValidateEnvironmentVariable(source.Authentication.SecretEnvironmentVariable, $"{path}.authentication.secretEnvironmentVariable", issues);
+            if (source.Authentication.CertificatePasswordEnvironmentVariable is { } passwordVariable)
+            {
+                ValidateEnvironmentVariable(passwordVariable, $"{path}.authentication.certificatePasswordEnvironmentVariable", issues);
+            }
         }
 
         for (var index = 0; index < configuration.Destinations.Count; index++)
@@ -149,11 +153,24 @@ public static class ConfigurationValidator
         }
     }
 
+    // Settings hold the name of an environment variable, never its value. Restricting names to the
+    // portable identifier form catches a secret or connection string pasted in by mistake; the
+    // rejected value is deliberately not included in the message.
     private static void ValidateEnvironmentVariable(string name, string path, List<ValidationIssue> issues)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
             issues.Add(new(path, "Environment variable name is required."));
         }
+        else if (!IsEnvironmentVariableName(name))
+        {
+            issues.Add(new(
+                path,
+                "Environment variable name must contain only letters, digits, and underscores and must not start with a digit. Specify the variable name, not its value."));
+        }
     }
+
+    private static bool IsEnvironmentVariableName(string name) =>
+        (char.IsAsciiLetter(name[0]) || name[0] == '_')
+        && name.All(character => char.IsAsciiLetterOrDigit(character) || character == '_');
 }
