@@ -111,12 +111,12 @@ public sealed class ConfigurationFileTests : IDisposable
         Assert.Equal("existing", await File.ReadAllTextAsync(path));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SaveAsync_PreservesExistingFilePermissions()
     {
         if (OperatingSystem.IsWindows())
         {
-            return;
+            throw new SkipException("Unix file modes and symbolic links are not tested on Windows.");
         }
 
         var path = await WriteAsync(ValidJson());
@@ -129,12 +129,12 @@ public sealed class ConfigurationFileTests : IDisposable
         Assert.Single(directory.GetFiles());
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SaveAsync_UpdatesSymbolicLinkTargetAndKeepsLink()
     {
         if (OperatingSystem.IsWindows())
         {
-            return;
+            throw new SkipException("Unix file modes and symbolic links are not tested on Windows.");
         }
 
         var target = await WriteAsync(ValidJson());

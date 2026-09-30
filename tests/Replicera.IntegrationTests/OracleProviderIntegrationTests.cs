@@ -12,15 +12,11 @@ public sealed class OracleProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_ORACLE_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -51,28 +47,20 @@ public sealed class OracleProviderIntegrationTests
         Assert.Contains(OracleIdentifier.Normalize(viewName), error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task ConnectionProbe_ConnectsToConfiguredDatabase()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         await new OracleConnectionProbe(connectionString).TestConnectionAsync(TestCancellationToken);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -122,15 +110,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(1, state.LastRunRecordsDeleted);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task NoDataLossFullRead_RetainsRowsMissingFromSourceWithRemovalDate()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -168,15 +152,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.False(await reader.ReadAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task LongStringColumns_ReplanCleanlyAndWidenIntoNclobWithoutLosingData()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var schema = new OracleSchemaManager(connectionString);
@@ -225,15 +205,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -269,15 +245,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(1, Convert.ToInt32(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -312,15 +284,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -375,15 +343,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(99999999999.25m, Convert.ToDecimal(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -443,15 +407,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -482,15 +442,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.True(relaxed!.Columns.Single(column => column.Name == "LEGACY").IsNullable);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -512,17 +468,13 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [Theory]
+    [SkippableTheory]
     [Trait("Category", "OracleIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
     public async Task ColumnWithChangedType_IsReplacedAccordingToMode(SynchronizationMode mode)
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -589,15 +541,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -626,15 +574,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync(job, changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var job = $"job_{UniqueSuffix()}";
         var provider = new OracleProvider();
@@ -669,15 +613,11 @@ public sealed class OracleProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -721,15 +661,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Null(state?.DataCheckpoint);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task FailureAfterCreateTable_LeavesTableManagedForTheNextRun()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -775,29 +711,21 @@ public sealed class OracleProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(table, await schema.ReadTableAsync(job, table, TestCancellationToken), new()).Changes);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task MetadataStore_ConcurrentRunsAllSucceed()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var store = new OracleMetadataStore(connectionString);
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -833,15 +761,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal("stable", state?.DataCheckpoint);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var unmanaged = AccountsTable($"unmanaged_{suffix}", 20);
@@ -896,15 +820,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "DESCRIPTION");
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task FailureState_IsDurableAndDoesNotExposeCheckpoint()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -926,15 +846,11 @@ public sealed class OracleProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "OracleIntegration")]
     public async Task SupportedValues_RoundTripThroughArrayBinding()
     {
         var connectionString = ConnectionString();
-        if (connectionString is null)
-        {
-            return;
-        }
 
         var suffix = UniqueSuffix();
         var job = $"job_{suffix}";
@@ -995,8 +911,8 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal("team", reader.GetString(11));
     }
 
-    private static string? ConnectionString() =>
-        Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+    private static string ConnectionString() =>
+        IntegrationEnvironment.RequireConnectionString(ConnectionEnvironmentVariable);
 
     private static string UniqueSuffix() => Guid.NewGuid().ToString("N")[..12];
 

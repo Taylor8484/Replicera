@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -58,6 +61,7 @@ def main() -> None:
                 "--output",
                 str(publish),
                 f"-p:Version={args.version}",
+                "-p:RestoreLockedMode=true",
             ],
             cwd=workspace,
             check=True,
@@ -72,10 +76,12 @@ def main() -> None:
         ):
             shutil.copy2(workspace / source, publish / destination)
         license_directory = publish / "third-party-licenses"
-        license_directory.mkdir()
+        shutil.copytree(workspace / "third-party-licenses", license_directory)
+        runtime_pack = runtime_pack_directory(workspace, args.runtime)
+        shutil.copy2(runtime_pack / "LICENSE.TXT", license_directory / "dotnet-runtime-LICENSE.txt")
         shutil.copy2(
-            workspace / "third-party-licenses/Oracle.ManagedDataAccess.Core-LICENSE.txt",
-            license_directory / "Oracle.ManagedDataAccess.Core-LICENSE.txt",
+            runtime_pack / "THIRD-PARTY-NOTICES.TXT",
+            license_directory / "dotnet-runtime-THIRD-PARTY-NOTICES.txt",
         )
 
         if args.runtime.startswith("win-"):
@@ -92,6 +98,39 @@ def main() -> None:
         f"{digest}  {archive.name}\n", encoding="utf-8"
     )
     print(archive)
+
+
+def runtime_pack_directory(workspace: Path, runtime: str) -> Path:
+    """Locate the .NET runtime pack that the self-contained publish bundled."""
+    assets = json.loads(
+        (workspace / "src/Replicera.Cli/obj/project.assets.json").read_text(encoding="utf-8")
+    )
+    name = f"Microsoft.NETCore.App.Runtime.{runtime}"
+    for framework in assets["project"]["frameworks"].values():
+        for dependency in framework.get("downloadDependencies", []):
+            if dependency["name"] == name:
+                version = dependency["version"].strip("[]").split(",")[0].strip()
+                directory = global_packages_folder() / name.lower() / version
+                if (directory / "THIRD-PARTY-NOTICES.TXT").exists():
+                    return directory
+                raise SystemExit(f"The .NET runtime notices were not found in {directory}.")
+    raise SystemExit(f"The publish did not use the {name} runtime pack.")
+
+
+def global_packages_folder() -> Path:
+    configured = os.environ.get("NUGET_PACKAGES")
+    if configured:
+        return Path(configured)
+    output = subprocess.run(
+        ["dotnet", "nuget", "locals", "global-packages", "--list"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    match = re.search(r"global-packages:\s*(.+)", output)
+    if match is None:
+        raise SystemExit("Could not determine the NuGet global packages folder.")
+    return Path(match.group(1).strip())
 
 
 if __name__ == "__main__":

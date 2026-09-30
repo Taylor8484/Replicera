@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Fail instead of skipping when a test cannot find its database connection.
+export REPLICERA_INTEGRATION_REQUIRED=1
 
 if [[ -n "${REPLICERA_ORACLE_TEST_CONNECTION_STRING:-}" ]]; then
     dotnet test tests/Replicera.IntegrationTests/Replicera.IntegrationTests.csproj \

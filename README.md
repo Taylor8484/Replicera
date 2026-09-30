@@ -28,14 +28,14 @@ Published builds use the executable name `replicera`. Run `replicera --version` 
 
 ## Release Packages
 
-Pushing a `v*` tag builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files, and creates a GitHub release. Each archive contains the executable, README, operations guide, license, and third-party notices. Packages can also be built locally:
+Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, and third-party notices. Packages can also be built locally:
 
 ```sh
 python3 scripts/package_release.py --version 0.1.0 --runtime linux-x64
 python3 scripts/package_release.py --version 0.1.0 --runtime win-x64
 ```
 
-Verify the adjacent `.sha256` file, extract the archive into a versioned directory, and invoke `replicera` (`replicera.exe` on Windows) from that directory. Upgrade by extracting the new version beside the old one, reusing the external configuration and environment variables, and switching the scheduled command after `replicera --version` succeeds.
+Verify the adjacent `.sha256` file, and optionally the provenance with `gh attestation verify <archive> --repo Taylor8484/Replicera`, then extract the archive into a versioned directory, and invoke `replicera` (`replicera.exe` on Windows) from that directory. Upgrade by extracting the new version beside the old one, reusing the external configuration and environment variables, and switching the scheduled command after `replicera --version` succeeds.
 
 Run the database integration suites with Docker:
 
@@ -49,7 +49,7 @@ scripts/run-dataverse-integration-tests.sh
 scripts/run-end-to-end-tests.sh
 ```
 
-The database scripts start and remove temporary SQL Server 2022, PostgreSQL 17, and Oracle AI Database Free 26ai containers. To use an existing non-production server, set the corresponding `REPLICERA_SQL_TEST_CONNECTION_STRING`, `REPLICERA_POSTGRES_TEST_CONNECTION_STRING`, or `REPLICERA_ORACLE_TEST_CONNECTION_STRING`. The lock-loss integration tests terminate the lock's database session, so the test login needs permission to end other sessions in its test database: `sa`-equivalent rights on SQL Server, `pg_signal_backend` or superuser on PostgreSQL, and `ALTER SYSTEM` plus `SELECT` on `V$SESSION` for the Oracle test user. The Oracle tests also need `CREATE TRIGGER` to simulate a failure after `CREATE TABLE`. `scripts/run-oracle-integration-tests.sh` grants all of these to its test user. Grant these only in disposable test environments. The scale script streams a logical 512 MiB dataset with a 256 MiB managed-heap limit and enforces a 5,000-record/s baseline. The Dataverse and end-to-end scripts load `.env.local` by default, or the file named by `REPLICERA_ENV_FILE`. The SQL Server and Oracle end-to-end scripts create and clean up a Dataverse account while verifying initial, update, and delete replication. Never use a production Dataverse environment.
+The database scripts start and remove temporary SQL Server 2022, PostgreSQL 17, and Oracle AI Database Free 26ai containers. To use an existing non-production server, set the corresponding `REPLICERA_SQL_TEST_CONNECTION_STRING`, `REPLICERA_POSTGRES_TEST_CONNECTION_STRING`, or `REPLICERA_ORACLE_TEST_CONNECTION_STRING`. Without these variables the database tests are reported as skipped; the scripts set `REPLICERA_INTEGRATION_REQUIRED=1`, which makes a missing connection fail the run instead. The lock-loss integration tests terminate the lock's database session, so the test login needs permission to end other sessions in its test database: `sa`-equivalent rights on SQL Server, `pg_signal_backend` or superuser on PostgreSQL, and `ALTER SYSTEM` plus `SELECT` on `V$SESSION` for the Oracle test user. The Oracle tests also need `CREATE TRIGGER` to simulate a failure after `CREATE TABLE`. `scripts/run-oracle-integration-tests.sh` grants all of these to its test user. Grant these only in disposable test environments. The scale script streams a logical 512 MiB dataset with a 256 MiB managed-heap limit and enforces a 5,000-record/s baseline. The Dataverse and end-to-end scripts load `.env.local` by default, or the file named by `REPLICERA_ENV_FILE`. The SQL Server and Oracle end-to-end scripts create and clean up a Dataverse account while verifying initial, update, and delete replication. Never use a production Dataverse environment.
 
 Configuration files contain environment-variable names rather than secret values. Client-secret authentication reads the secret directly from the configured variable. Certificate authentication reads a base64-encoded PKCS#12 document and, when needed, its password from a second environment variable.
 

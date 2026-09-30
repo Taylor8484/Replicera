@@ -17,15 +17,11 @@ public sealed class SqlServerProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_SQL_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -53,15 +49,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -146,15 +138,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DisposedSession_RollsBackRowsAndCheckpoint()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -191,15 +179,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_ReadsUnmanagedTableWithoutMetadataSchema()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         await using (var connection = new SqlConnection(database.ConnectionString))
         {
@@ -225,15 +209,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(SchemaChangeKind.OwnershipConflict, Assert.Single(plan.Changes).Kind);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_AddsNullableColumnAndWidensText()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var initial = AccountsTable(nameLength: 20);
         await PrepareTableAsync(database.ConnectionString, initial);
@@ -288,15 +268,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(5, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable(includeDescription: true);
         await PrepareTableAsync(database.ConnectionString, table);
@@ -333,15 +309,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(1, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -374,15 +346,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition AmountTable(int scale) => new TableDefinition(
             "account",
@@ -434,15 +402,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition CodesTable(bool supported) => new TableDefinition(
             "account",
@@ -499,15 +463,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await new SqlServerMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
@@ -543,15 +503,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(20, legacyColumn.MaxLength);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         await PrepareTableAsync(database.ConnectionString, AccountsTable(nameLength: 200));
         var schema = new SqlServerSchemaManager(database.ConnectionString);
@@ -570,17 +526,13 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [Theory]
+    [SkippableTheory]
     [Trait("Category", "SqlServerIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
     public async Task ColumnWithChangedType_IsReplacedAccordingToMode(SynchronizationMode mode)
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition CodeTable(bool numeric) => new TableDefinition(
             "account",
@@ -644,15 +596,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         static TableDefinition EventTable(DateTimeBehavior userLocal, DateTimeBehavior independent) => new TableDefinition(
             "event",
@@ -678,15 +626,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var provider = new SqlServerProvider();
         await using var tableLock = await provider.AcquireTableLockAsync(database.ConnectionString, "integration", "account", TestCancellationToken);
@@ -720,30 +664,22 @@ public sealed class SqlServerProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var store = new SqlServerMetadataStore(database.ConnectionString);
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
         await store.EnsureCreatedAsync(TestCancellationToken);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLock_DistinguishesLongJobNames()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var provider = new SqlServerProvider();
         var job = new string('j', 300);
@@ -753,15 +689,11 @@ public sealed class SqlServerProviderIntegrationTests
             await provider.AcquireTableLockAsync(database.ConnectionString, job, "account", TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -776,15 +708,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SourceFailure_RollsBackDataAndRecordsDurableFailedRun()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -823,15 +751,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task Status_JsonOutputReportsPersistedTableState()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -882,15 +806,11 @@ public sealed class SqlServerProviderIntegrationTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task MultiPageSync_LoadsEveryPageAndCommitsTerminalCheckpoint()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -928,15 +848,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("terminal-checkpoint", reader.GetString(0));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SecondInitialSync_AtomicallyReplacesExistingRows()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -967,15 +883,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.False(await reader.ReadAsync(TestCancellationToken));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SupportedValues_RoundTripAtBoundariesAndPreserveNulls()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = FidelityTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -1052,15 +964,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.True(reader.IsDBNull(3));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task CheckpointPersistenceFailure_RollsBackAppliedRowsAndStagingTable()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -1112,15 +1020,11 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [Fact]
+    [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task AbruptConnectionTermination_RollsBackRowsCheckpointAndStagingTable()
     {
         await using var database = await TestDatabase.CreateAsync();
-        if (database is null)
-        {
-            return;
-        }
 
         var table = AccountsTable();
         await PrepareTableAsync(database.ConnectionString, table);
@@ -1342,13 +1246,9 @@ public sealed class SqlServerProviderIntegrationTests
     {
         public string ConnectionString { get; } = connectionString;
 
-        public static async Task<TestDatabase?> CreateAsync()
+        public static async Task<TestDatabase> CreateAsync()
         {
-            var configured = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
-            if (string.IsNullOrWhiteSpace(configured))
-            {
-                return null;
-            }
+            var configured = IntegrationEnvironment.RequireConnectionString(ConnectionEnvironmentVariable);
 
             var adminBuilder = new SqlConnectionStringBuilder(configured) { InitialCatalog = "master" };
             var databaseName = $"replicera_{Guid.NewGuid():N}";

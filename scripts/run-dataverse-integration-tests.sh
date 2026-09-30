@@ -5,8 +5,11 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${REPLICERA_ENV_FILE:-$repository_root/.env.local}"
 
 if [[ -f "$environment_file" ]]; then
+    # Export every assignment so values reach dotnet test even without an explicit export.
+    set -a
     # shellcheck disable=SC1090
     source "$environment_file"
+    set +a
 fi
 
 required_variables=(

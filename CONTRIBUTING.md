@@ -4,7 +4,7 @@ Thank you for contributing. Read the README, operations guide, Community princip
 
 ## Contributor Rights and Provenance
 
-Contributors retain copyright ownership of their contributions. You must have the legal right to submit your work and must not submit code copied from incompatible, unauthorized, or unknown sources. Identify adapted code and its license in the pull request. New third-party dependencies require a documented license-compatibility review and an update to `THIRD-PARTY-NOTICES.md` when applicable.
+Contributors retain copyright ownership of their contributions. You must have the legal right to submit your work and must not submit code copied from incompatible, unauthorized, or unknown sources. Identify adapted code and its license in the pull request. New third-party dependencies require a documented license-compatibility review. After adding or updating a package, run `dotnet restore Replicera.sln` and `python3 scripts/generate_third_party_notices.py`, then commit the regenerated `THIRD-PARTY-NOTICES.md` and `third-party-licenses` files; CI fails when they are out of date.
 
 Accepted Community contributions remain available in Replicera Community under MPL-2.0. Under the project's Community contribution guarantee, using a contribution in a commercial Replicera product will not cause that contribution to be removed from Community solely to make it commercially exclusive. This is a project governance commitment; it does not modify or replace MPL 2.0.
 

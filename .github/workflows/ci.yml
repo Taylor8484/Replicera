@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-test:
     strategy:
@@ -15,72 +19,80 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: '**/packages.lock.json'
       - run: dotnet restore Replicera.sln --locked-mode
       - run: dotnet build Replicera.sln --no-restore --configuration Release
       - run: dotnet test Replicera.sln --no-build --configuration Release --filter "Category!=Credentialed&Category!=SqlServerIntegration&Category!=PostgreSqlIntegration&Category!=OracleIntegration&Category!=DataverseSqlEndToEnd&Category!=DataverseOracleEndToEnd&Category!=Scale"
 
   format:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
       - run: dotnet restore Replicera.sln --locked-mode
       - run: dotnet format Replicera.sln --no-restore --verify-no-changes
+      - name: Check third-party notices
+        run: python3 scripts/generate_third_party_notices.py --check
 
   sql-server-integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: '**/packages.lock.json'
       - run: dotnet restore Replicera.sln --locked-mode
       - run: scripts/run-sqlserver-integration-tests.sh
 
   postgresql-integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: '**/packages.lock.json'
       - run: dotnet restore Replicera.sln --locked-mode
       - run: scripts/run-postgresql-integration-tests.sh
 
   oracle-integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: '**/packages.lock.json'
       - run: dotnet restore Replicera.sln --locked-mode
       - run: scripts/run-oracle-integration-tests.sh
 
   scale:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: '**/packages.lock.json'
       - run: dotnet restore Replicera.sln --locked-mode
       - run: scripts/run-scale-test.sh
 
@@ -96,18 +108,19 @@ jobs:
             runtime: win-x64
             executable: replicera.exe
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
       - name: Publish framework-dependent artifact
-        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained false --output artifacts/framework-dependent
+        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained false --output artifacts/framework-dependent -p:RestoreLockedMode=true
       - name: Smoke-test framework-dependent artifact
         shell: pwsh
         run: '& (Join-Path "artifacts/framework-dependent" "${{ matrix.executable }}") --help'
       - name: Publish self-contained artifact
-        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/self-contained
+        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/self-contained -p:RestoreLockedMode=true
       - name: Smoke-test self-contained artifact
         shell: pwsh
         run: '& (Join-Path "artifacts/self-contained" "${{ matrix.executable }}") --help'
@@ -126,7 +139,7 @@ jobs:
           }
           & (Join-Path "artifacts/extracted/$package" "${{ matrix.executable }}") --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: replicera-${{ matrix.runtime }}
           path: artifacts/

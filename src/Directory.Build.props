@@ -1,0 +1,11 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!--
+      Release runtimes. Publishing with a runtime restores every project in the CLI's graph for it,
+      so each lock file must record these runtimes for release publishes to restore in locked mode.
+    -->
+    <RuntimeIdentifiers>linux-x64;win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+</Project>
