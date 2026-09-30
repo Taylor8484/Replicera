@@ -326,6 +326,47 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var stateStore = new SqlServerReplicationStateStore(database.ConnectionString);
+        var created = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotEqual(TableState.ResyncRequired, created?.State);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Existing", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = "DROP TABLE [dbo].[account];";
+            _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new SqlServerSchemaManager(database.ConnectionString);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy());
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.CreateTable);
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotNull(state);
+        Assert.Null(state.DataCheckpoint);
+        Assert.Equal(TableState.ResyncRequired, state.State);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

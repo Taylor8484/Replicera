@@ -270,6 +270,49 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        var stateStore = new OracleReplicationStateStore(connectionString);
+        var created = await stateStore.GetTableStateAsync(job, table.LogicalName, TestCancellationToken);
+        Assert.NotEqual(TableState.ResyncRequired, created?.State);
+        var writer = new OracleDestinationWriter(connectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(job, table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Existing", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using (var connection = new OracleConnection(connectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = $"DROP TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} PURGE";
+            _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new OracleSchemaManager(connectionString);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new());
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.CreateTable);
+        await schema.ApplySchemaPlanAsync(job, table, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync(job, table.LogicalName, TestCancellationToken);
+        Assert.NotNull(state);
+        Assert.Null(state.DataCheckpoint);
+        Assert.Equal(TableState.ResyncRequired, state.State);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

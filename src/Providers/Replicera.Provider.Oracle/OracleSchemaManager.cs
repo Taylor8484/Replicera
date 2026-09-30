@@ -68,7 +68,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await EnsureNoExternalDependenciesAsync(connection, source, plan, cancellationToken).ConfigureAwait(false);
         var requiresResync = plan.Changes.Any(change => change.IsAutomatic && (change.Kind is
-                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable
             || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresLobConversion(source, change.ObjectName))));
         if (requiresResync)
         {
@@ -104,7 +104,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
             await using var reset = connection.CreateCommand();
             reset.Transaction = transaction;
             reset.BindByName = true;
-            reset.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'ResyncRequired' WHERE TABLE_ID = :table_id";
+            reset.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'ResyncRequired' WHERE TABLE_ID = :table_id AND CHANGE_CHECKPOINT IS NOT NULL";
             reset.Parameters.Add("table_id", OracleDbType.Raw, 16).Value = OracleValueConverter.ToBytes(tableId);
             _ = await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -127,7 +127,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.BindByName = true;
-        command.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'ResyncRequired' WHERE REPLICATION_JOB_ID = :job_name AND DATAVERSE_LOGICAL_NAME = :logical_name";
+        command.CommandText = "UPDATE REPLICERA_TABLES SET CHANGE_CHECKPOINT = NULL, STATUS = 'ResyncRequired' WHERE REPLICATION_JOB_ID = :job_name AND DATAVERSE_LOGICAL_NAME = :logical_name AND CHANGE_CHECKPOINT IS NOT NULL";
         command.Parameters.Add("job_name", OracleDbType.NVarchar2).Value = jobName;
         command.Parameters.Add("logical_name", OracleDbType.NVarchar2).Value = logicalName;
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

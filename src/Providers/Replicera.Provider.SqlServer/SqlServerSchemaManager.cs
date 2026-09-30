@@ -131,11 +131,11 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
             source,
             cancellationToken).ConfigureAwait(false);
         if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
         {
             await using var reset = connection.CreateCommand();
             reset.Transaction = transaction;
-            reset.CommandText = "UPDATE [replicera].[Tables] SET [ChangeCheckpoint] = NULL, [Status] = N'ResyncRequired' WHERE [TableId] = @tableId;";
+            reset.CommandText = "UPDATE [replicera].[Tables] SET [ChangeCheckpoint] = NULL, [Status] = N'ResyncRequired' WHERE [TableId] = @tableId AND [ChangeCheckpoint] IS NOT NULL;";
             _ = reset.Parameters.AddWithValue("@tableId", tableId);
             _ = await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }

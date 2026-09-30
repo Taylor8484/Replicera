@@ -167,6 +167,46 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var stateStore = new PostgreSqlReplicationStateStore(database.ConnectionString);
+        var created = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotEqual(TableState.ResyncRequired, created?.State);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Existing", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var drop = new NpgsqlCommand("DROP TABLE public.account;", connection);
+            _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy());
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.CreateTable);
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotNull(state);
+        Assert.Null(state.DataCheckpoint);
+        Assert.Equal(TableState.ResyncRequired, state.State);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();
