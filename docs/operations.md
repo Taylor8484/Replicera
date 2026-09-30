@@ -108,6 +108,8 @@ In `complete` mode the replacement deletes and reloads only the managed table in
 
 ## Troubleshooting
 
+Dataverse requests are retried up to three times when Dataverse reports service-protection throttling, a request timeout, or a server error, or when the connection fails. Throttled requests wait for the `Retry-After` interval Dataverse returns, up to five minutes; other retries back off exponentially from two seconds with jitter, up to one minute. Requests that create or associate records are repeated only after throttling, because a request that failed after reaching Dataverse may already have taken effect. Other rejections, including missing privileges, are reported immediately without retrying.
+
 - **Exit 2:** validate JSON, environment-variable names, job references, and batch size.
 - **Exit 3 or 4:** verify the Dataverse URL, application user, credentials, organization-level table privileges, and change-tracking setting.
 - **Exit 5:** verify SQL connectivity, database selection, TLS settings, and database permissions.
