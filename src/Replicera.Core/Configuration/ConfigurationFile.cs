@@ -12,6 +12,7 @@ public static class ConfigurationFile
         PropertyNameCaseInsensitive = true,
         WriteIndented = true,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        RespectNullableAnnotations = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 

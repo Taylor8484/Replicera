@@ -61,6 +61,10 @@ public static class ConfigurationValidator
             {
                 issues.Add(new($"{path}.tables", "At least one table is required."));
             }
+            else if (job.Tables.Any(string.IsNullOrWhiteSpace))
+            {
+                issues.Add(new($"{path}.tables", "Table names must not be blank."));
+            }
             else if (job.Tables.Distinct(StringComparer.OrdinalIgnoreCase).Count() != job.Tables.Count)
             {
                 issues.Add(new($"{path}.tables", "Table names must be unique within a job."));
@@ -96,6 +100,12 @@ public static class ConfigurationValidator
             if (!job.Tables.Contains(table.Key, StringComparer.OrdinalIgnoreCase))
             {
                 issues.Add(new(path, $"Rename mappings reference table '{table.Key}', which is not configured for the job."));
+            }
+
+            if (table.Value is null)
+            {
+                issues.Add(new(path, "Column rename mappings are required."));
+                continue;
             }
 
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
