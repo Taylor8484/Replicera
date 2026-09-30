@@ -1,5 +1,6 @@
 using System.Collections;
 using Microsoft.Xrm.Sdk;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 
 namespace Replicera.Dataverse.ChangeTracking;
@@ -23,8 +24,23 @@ public static class DataverseValueConverter
         ArgumentNullException.ThrowIfNull(entity);
         return entity.Attributes.ToDictionary(
             pair => pair.Key,
-            pair => Convert(pair.Value),
+            pair => ConvertColumn(entity.LogicalName, pair.Key, pair.Value),
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static object? ConvertColumn(string table, string column, object? value)
+    {
+        try
+        {
+            return Convert(value);
+        }
+        catch (NotSupportedException exception)
+        {
+            throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                $"Column '{column}' in table '{table}' returned unsupported Dataverse value type '{value!.GetType().FullName}'.",
+                exception);
+        }
     }
 
     private static ChoiceSetValue ConvertChoices(IEnumerable options)
