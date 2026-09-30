@@ -30,7 +30,8 @@ public enum SchemaChangeKind
     SourceColumnRemoved,
     IncompatibleColumn,
     OwnershipConflict,
-    RelaxColumnNullability
+    RelaxColumnNullability,
+    UnsupportedColumnRetained
 }
 
 public static class ManagedColumnNames

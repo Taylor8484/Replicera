@@ -98,6 +98,9 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         foreach (var change in plan.Changes.Where(change => change.IsAutomatic))
         {
+            var existingDeclaration = change.Kind == SchemaChangeKind.RelaxColumnNullability && FindLayoutColumn(source, change.ObjectName) is null
+                ? await ReadColumnDeclarationAsync(connection, transaction, source, change.ObjectName, cancellationToken).ConfigureAwait(false)
+                : null;
             var sql = change.Kind switch
             {
                 SchemaChangeKind.CreateTable => SqlServerDdlBuilder.BuildCreateTable(source),
@@ -108,7 +111,7 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
                 SchemaChangeKind.RenameColumn => BuildRenameColumn(source, change.ObjectName, change.NewObjectName!),
                 SchemaChangeKind.DropColumn => BuildDropColumn(source, change.ObjectName),
                 SchemaChangeKind.ExpandColumn => BuildAlterColumn(source, change.ObjectName),
-                SchemaChangeKind.RelaxColumnNullability => BuildRelaxNullability(source, change.ObjectName),
+                SchemaChangeKind.RelaxColumnNullability => BuildRelaxNullability(source, change.ObjectName, existingDeclaration),
                 _ => null
             };
             if (sql is null)
@@ -131,11 +134,11 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
             source,
             cancellationToken).ConfigureAwait(false);
         if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
         {
             await using var reset = connection.CreateCommand();
             reset.Transaction = transaction;
-            reset.CommandText = "UPDATE [replicera].[Tables] SET [ChangeCheckpoint] = NULL, [Status] = N'ResyncRequired' WHERE [TableId] = @tableId;";
+            reset.CommandText = "UPDATE [replicera].[Tables] SET [ChangeCheckpoint] = NULL, [Status] = N'ResyncRequired' WHERE [TableId] = @tableId AND [ChangeCheckpoint] IS NOT NULL;";
             _ = reset.Parameters.AddWithValue("@tableId", tableId);
             _ = await reset.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -372,17 +375,61 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
         return $"ALTER TABLE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} ALTER COLUMN {SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(column.LogicalName))} {type} NULL;";
     }
 
-    internal static string BuildRelaxNullability(TableDefinition table, string columnName)
+    // SQL Server restates the column type when changing nullability. Columns in the source layout
+    // use their mapped type; a retained column that has left the layout keeps its existing type.
+    internal static string BuildRelaxNullability(TableDefinition table, string columnName, string? existingDeclaration = null)
     {
-        var column = SqlServerTableLayout.GetColumns(table)
-            .Single(column =>
-                string.Equals(column.Name, columnName, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(
-                    column.IsLookupTarget ? $"{column.Source.LogicalName}_type" : column.Source.LogicalName,
-                    columnName,
-                    StringComparison.OrdinalIgnoreCase));
-        var type = column.IsLookupTarget ? "nvarchar(128)" : SqlServerTypeMapper.Map(column.Source).Declaration;
-        return $"ALTER TABLE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} ALTER COLUMN {SqlServerIdentifier.Quote(column.Name)} {type} NULL;";
+        var column = FindLayoutColumn(table, columnName);
+        var name = column?.Name ?? SqlServerIdentifier.Normalize(columnName);
+        var type = column is null
+            ? existingDeclaration ?? throw new InvalidOperationException($"The type of retained column '{columnName}' is required.")
+            : column.IsLookupTarget ? "nvarchar(128)" : SqlServerTypeMapper.Map(column.Source).Declaration;
+        return $"ALTER TABLE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} ALTER COLUMN {SqlServerIdentifier.Quote(name)} {type} NULL;";
+    }
+
+    internal static string FormatDeclaration(string typeName, short maxLength, byte precision, byte scale) => typeName switch
+    {
+        "nvarchar" or "nchar" => maxLength == -1 ? $"{typeName}(max)" : $"{typeName}({maxLength / 2})",
+        "varchar" or "char" or "varbinary" or "binary" => maxLength == -1 ? $"{typeName}(max)" : $"{typeName}({maxLength})",
+        "decimal" or "numeric" => $"{typeName}({precision},{scale})",
+        "datetime2" or "datetimeoffset" or "time" => $"{typeName}({scale})",
+        _ => typeName
+    };
+
+    private static SqlServerPhysicalColumn? FindLayoutColumn(TableDefinition table, string columnName) =>
+        SqlServerTableLayout.GetColumns(table).SingleOrDefault(column =>
+            string.Equals(column.Name, columnName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(
+                column.IsLookupTarget ? $"{column.Source.LogicalName}_type" : column.Source.LogicalName,
+                columnName,
+                StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<string> ReadColumnDeclarationAsync(
+        SqlConnection connection,
+        SqlTransaction transaction,
+        TableDefinition table,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT t.[name], c.[max_length], c.[precision], c.[scale]
+            FROM sys.columns AS c
+            INNER JOIN sys.types AS t ON t.[user_type_id] = c.[user_type_id]
+            WHERE c.[object_id] = OBJECT_ID(@table) AND c.[name] = @column;
+            """;
+        _ = command.Parameters.AddWithValue("@table", $"[dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))}");
+        _ = command.Parameters.AddWithValue("@column", SqlServerIdentifier.Normalize(columnName));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new RepliceraException(
+                ErrorCategory.SchemaConflict,
+                $"Retained column '{columnName}' was not found in destination table '{table.DestinationName}'.");
+        }
+
+        return FormatDeclaration(reader.GetString(0), reader.GetInt16(1), reader.GetByte(2), reader.GetByte(3));
     }
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch

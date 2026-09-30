@@ -53,7 +53,13 @@ public static class DataverseMetadataTranslator
             Scale = attribute switch
             {
                 DecimalAttributeMetadata value => value.Precision,
-                MoneyAttributeMetadata value => value.Precision,
+                MoneyAttributeMetadata value => MoneyScale(value),
+                _ => null
+            },
+            MaxIntegerDigits = attribute switch
+            {
+                DecimalAttributeMetadata => DecimalIntegerDigits,
+                MoneyAttributeMetadata => MoneyIntegerDigits,
                 _ => null
             },
             DateTimeBehavior = attribute is DateTimeAttributeMetadata dateTime ? MapDateTimeBehavior(dateTime) : null,
@@ -63,6 +69,21 @@ public static class DataverseMetadataTranslator
             UnsupportedReason = unsupportedReason
         };
     }
+
+    // Dataverse limits decimal columns to +/-100,000,000,000 and currency columns to
+    // +/-922,337,203,685,477, whatever their declared precision.
+    private const int DecimalIntegerDigits = 12;
+    private const int MoneyIntegerDigits = 15;
+
+    // A currency column's Precision applies only when PrecisionSource is 0. Otherwise values use
+    // the organization pricing precision or the transaction currency's precision, either of which
+    // can be up to four decimal places, so use the largest scale to avoid rounding.
+    private const int MaximumMoneyScale = 4;
+
+    private static int MoneyScale(MoneyAttributeMetadata money) =>
+        money.PrecisionSource is null or 0 && money.Precision is { } precision
+            ? precision
+            : MaximumMoneyScale;
 
     private static SourceType MapType(AttributeMetadata attribute, out string? unsupportedReason)
     {

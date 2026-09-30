@@ -408,6 +408,174 @@ public sealed class SchemaPlannerTests
         Assert.Empty(SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy()).Changes);
     }
 
+    [Theory]
+    [InlineData(SourceType.Decimal, 38, 2, 4, 12)]
+    [InlineData(SourceType.Money, 19, 2, 4, 15)]
+    public void Plan_ExpandsWhenDataverseScaleIncreases(SourceType type, int precision, int oldScale, int newScale, int maxIntegerDigits)
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(type, precision, newScale, maxIntegerDigits),
+            NumericDestination(type, precision, oldScale),
+            new SchemaPolicy());
+
+        var change = Assert.Single(plan.Changes);
+        Assert.Equal(SchemaChangeKind.ExpandColumn, change.Kind);
+        Assert.True(change.IsAutomatic);
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_BlocksScaleIncreaseThatCouldOverflowExistingValues()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Decimal, 10, 4, maxIntegerDigits: null),
+            NumericDestination(SourceType.Decimal, 12, 2),
+            new SchemaPolicy());
+
+        Assert.Equal(SchemaChangeKind.IncompatibleColumn, Assert.Single(plan.Changes).Kind);
+        Assert.True(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_BlocksScaleIncreaseBeyondSourceRange()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Money, 19, 6, maxIntegerDigits: 15),
+            NumericDestination(SourceType.Money, 19, 4),
+            new SchemaPolicy());
+
+        Assert.True(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_StillBlocksScaleDecrease()
+    {
+        var plan = SchemaPlanner.Plan(
+            NumericTable(SourceType.Decimal, 38, 2, maxIntegerDigits: 12),
+            NumericDestination(SourceType.Decimal, 38, 4),
+            new SchemaPolicy());
+
+        Assert.Equal(SchemaChangeKind.IncompatibleColumn, Assert.Single(plan.Changes).Kind);
+    }
+
+    private static TableDefinition NumericTable(SourceType type, int precision, int scale, int? maxIntegerDigits) => new(
+        "account",
+        "accounts",
+        "account",
+        [
+            new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+            new ColumnDefinition
+            {
+                LogicalName = "amount",
+                SourceType = type,
+                IsNullable = true,
+                Precision = precision,
+                Scale = scale,
+                MaxIntegerDigits = maxIntegerDigits
+            }
+        ]);
+
+    private static DestinationTable NumericDestination(SourceType type, int precision, int scale) => new(
+        "dbo",
+        "account",
+        [
+            new("accountid", SourceType.Guid, false),
+            new("amount", type, true, null, precision, scale),
+            new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+        ],
+        true);
+
+    [Theory]
+    [InlineData(SynchronizationMode.Complete)]
+    [InlineData(SynchronizationMode.NoDataLoss)]
+    public void Plan_RetainsColumnThatBecameUnsupportedInsteadOfDroppingIt(SynchronizationMode mode)
+    {
+        var source = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition
+                {
+                    LogicalName = "formerlysupported",
+                    SourceType = SourceType.String,
+                    MaxLength = 100,
+                    UnsupportedReason = "Dataverse attribute 'formerlysupported' is not valid for read operations."
+                }
+            ]);
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new DestinationColumn("accountid", SourceType.Guid, false),
+                new DestinationColumn("formerlysupported", SourceType.String, true, 100),
+                new DestinationColumn(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true),
+                new DestinationColumn(ManagedColumnNames.SourceRemoveDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(source, destination, new SchemaPolicy(), mode);
+
+        var retained = Assert.Single(plan.Changes, change => change.ObjectName == "formerlysupported");
+        Assert.Equal(SchemaChangeKind.UnsupportedColumnRetained, retained.Kind);
+        Assert.False(retained.IsAutomatic);
+        Assert.False(retained.IsBlocking);
+        Assert.DoesNotContain(plan.Changes, change => change.Kind == SchemaChangeKind.DropColumn && change.ObjectName == "formerlysupported");
+    }
+
+    [Theory]
+    [InlineData(SynchronizationMode.NoDataLoss, true)]
+    [InlineData(SynchronizationMode.Complete, false)]
+    public void Plan_RelaxesNotNullOnlyForRetainedColumns(SynchronizationMode mode, bool expectRelax)
+    {
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("name", SourceType.String, true, 100),
+                new("legacy", SourceType.String, false, 20),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true),
+                new(ManagedColumnNames.SourceRemoveDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy(), mode);
+
+        Assert.Equal(
+            expectRelax,
+            plan.Changes.Any(change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName == "legacy"));
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_RelaxesNotNullOnColumnThatBecameUnsupported()
+    {
+        var source = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "legacy", SourceType = SourceType.String, UnsupportedReason = "Not readable." }
+            ]);
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("legacy", SourceType.String, false, 20),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(source, destination, new SchemaPolicy());
+
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.UnsupportedColumnRetained && change.ObjectName == "legacy");
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName == "legacy");
+    }
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>

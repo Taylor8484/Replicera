@@ -200,8 +200,28 @@ public static class SchemaPlanner
                 false));
         }
 
+        // A column that still exists in the source but can no longer be replicated keeps its
+        // destination column and existing values; it is reported rather than dropped.
+        var unsupportedSourceColumnNames = source.Columns
+            .Where(column => !column.IsSupported)
+            .Select(column => column.LogicalName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var destinationColumn in destination.Columns.Where(column =>
                      !sourceColumnNames.Contains(column.Name)
+                     && unsupportedSourceColumnNames.Contains(column.Name)))
+        {
+            changes.Add(new SchemaChange(
+                SchemaChangeKind.UnsupportedColumnRetained,
+                destinationColumn.Name,
+                $"Source column '{destinationColumn.Name}' is no longer supported for replication; retain the destination column without further updates.",
+                false,
+                false));
+            AddRetainedColumnRelaxation(changes, destinationColumn);
+        }
+
+        foreach (var destinationColumn in destination.Columns.Where(column =>
+                     !sourceColumnNames.Contains(column.Name)
+                     && !unsupportedSourceColumnNames.Contains(column.Name)
                      && !renamedDestinationColumns.Contains(column.Name)))
         {
             var drop = mode is SynchronizationMode.Complete or SynchronizationMode.Reload;
@@ -213,6 +233,10 @@ public static class SchemaPlanner
                     : $"Source column '{destinationColumn.Name}' no longer exists; retain it in the destination.",
                 drop,
                 false));
+            if (!drop)
+            {
+                AddRetainedColumnRelaxation(changes, destinationColumn);
+            }
         }
 
         return new SchemaPlan(changes);
@@ -249,11 +273,27 @@ public static class SchemaPlanner
         {
             SourceType.String => Length(source.MaxLength) > Length(destination.MaxLength),
             SourceType.Decimal or SourceType.Money =>
-                IntegerDigits(source.Precision, source.Scale) >= IntegerDigits(destination.Precision, destination.Scale)
-                && Value(source.Scale) >= Value(destination.Scale)
-                && (source.Precision != destination.Precision || source.Scale != destination.Scale),
+                (IntegerDigits(source.Precision, source.Scale) >= IntegerDigits(destination.Precision, destination.Scale)
+                    && Value(source.Scale) >= Value(destination.Scale)
+                    && (source.Precision != destination.Precision || source.Scale != destination.Scale))
+                || IsSafeScaleIncrease(source, destination),
             _ => false
         };
+    }
+
+    // Adding decimal places with a fixed precision leaves fewer digits before the decimal point.
+    // That is safe when the source type still covers every value the destination can hold: the
+    // source's enforced range when known, otherwise the larger of the two declared ranges.
+    private static bool IsSafeScaleIncrease(ColumnDefinition source, DestinationColumn destination)
+    {
+        if (Value(source.Scale) <= Value(destination.Scale))
+        {
+            return false;
+        }
+
+        var requiredIntegerDigits = source.MaxIntegerDigits
+            ?? Math.Max(IntegerDigits(source.Precision, source.Scale), IntegerDigits(destination.Precision, destination.Scale));
+        return IntegerDigits(source.Precision, source.Scale) >= requiredIntegerDigits;
     }
 
     private static bool IsNarrowingOrIncompatible(ColumnDefinition source, DestinationColumn destination)
@@ -267,6 +307,16 @@ public static class SchemaPlanner
                 || Value(source.Scale) < Value(destination.Scale),
             _ => false
         };
+    }
+
+    // A retained column no longer receives values, so new rows would violate a NOT NULL constraint
+    // created before destination columns were made nullable.
+    private static void AddRetainedColumnRelaxation(List<SchemaChange> changes, DestinationColumn destinationColumn)
+    {
+        if (!destinationColumn.IsNullable && !IsManagedName(destinationColumn.Name))
+        {
+            changes.Add(RelaxNullability(destinationColumn.Name));
+        }
     }
 
     // Destination columns other than the primary key accept nulls so that required-level

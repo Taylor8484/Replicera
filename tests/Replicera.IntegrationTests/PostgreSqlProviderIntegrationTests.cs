@@ -167,6 +167,212 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var stateStore = new PostgreSqlReplicationStateStore(database.ConnectionString);
+        var created = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotEqual(TableState.ResyncRequired, created?.State);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Existing", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var drop = new NpgsqlCommand("DROP TABLE public.account;", connection);
+            _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy());
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.CreateTable);
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.NotNull(state);
+        Assert.Null(state.DataCheckpoint);
+        Assert.Equal(TableState.ResyncRequired, state.State);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition AmountTable(int scale) => new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition
+                {
+                    LogicalName = "amount",
+                    SourceType = SourceType.Decimal,
+                    IsNullable = true,
+                    Precision = 38,
+                    Scale = scale,
+                    MaxIntegerDigits = 12
+                }
+            ]);
+        var narrow = AmountTable(2);
+        await PrepareTableAsync(database.ConnectionString, narrow);
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync("integration", narrow, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["amount"] = 99999999999.25m })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var widened = AmountTable(4);
+        var plan = SchemaPlanner.Plan(widened, await schema.ReadTableAsync(widened, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.ExpandColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync("integration", widened, plan, TestCancellationToken);
+
+        var applied = await schema.ReadTableAsync(widened, TestCancellationToken);
+        Assert.NotNull(applied);
+        Assert.Equal(4, applied.Columns.Single(column => string.Equals(column.Name, "amount", StringComparison.OrdinalIgnoreCase)).Scale);
+        Assert.Empty(SchemaPlanner.Plan(widened, applied, new SchemaPolicy()).Changes);
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand("SELECT amount FROM public.account;", connection);
+        Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition CodesTable(bool supported) => new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = 100 },
+                new ColumnDefinition
+                {
+                    LogicalName = "legacycode",
+                    SourceType = SourceType.String,
+                    IsNullable = true,
+                    MaxLength = 20,
+                    UnsupportedReason = supported ? null : "Dataverse attribute 'legacycode' is not valid for read operations."
+                }
+            ]);
+        await PrepareTableAsync(database.ConnectionString, CodesTable(true));
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync("integration", CodesTable(true), TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "First", ["legacycode"] = "KEEP" })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var unsupported = CodesTable(false);
+        var plan = SchemaPlanner.Plan(unsupported, await schema.ReadTableAsync(unsupported, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.UnsupportedColumnRetained, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync("integration", unsupported, plan, TestCancellationToken);
+        await using (var session = await writer.BeginIncrementalSyncAsync("integration", unsupported, "checkpoint-1", TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Updated" })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-2", new(1, 1, 0, 1, 0), TestCancellationToken);
+        }
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand("SELECT name || '|' || legacycode FROM public.account;", connection);
+        Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await new PostgreSqlMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        await schema.ApplySchemaPlanAsync(
+            "integration",
+            table,
+            SchemaPlanner.Plan(table, null, new SchemaPolicy(), SynchronizationMode.NoDataLoss),
+            TestCancellationToken);
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var legacy = new NpgsqlCommand(
+                "ALTER TABLE public.account ADD COLUMN legacy character varying(20) NOT NULL DEFAULT 'x'; ALTER TABLE public.account ALTER COLUMN legacy DROP DEFAULT;",
+                connection);
+            _ = await legacy.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy(), SynchronizationMode.NoDataLoss);
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.SourceColumnRemoved && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", table, TestCancellationToken, replaceExisting: false, retainDeletedRows: true, mode: SynchronizationMode.NoDataLoss))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "New row", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+        var relaxed = await schema.ReadTableAsync(table, TestCancellationToken);
+        Assert.True(relaxed!.Columns.Single(column => column.Name == "legacy").IsNullable);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

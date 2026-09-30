@@ -81,6 +81,27 @@ public sealed class SqlServerDdlBuilderTests
             SqlServerSchemaManager.BuildRelaxNullability(RequiredColumnTable(), "ownerid_type"));
     }
 
+    [Theory]
+    [InlineData("nvarchar", 40, 0, 0, "nvarchar(20)")]
+    [InlineData("nvarchar", -1, 0, 0, "nvarchar(max)")]
+    [InlineData("varchar", 10, 0, 0, "varchar(10)")]
+    [InlineData("decimal", 17, 38, 4, "decimal(38,4)")]
+    [InlineData("datetime2", 8, 27, 7, "datetime2(7)")]
+    [InlineData("uniqueidentifier", 16, 0, 0, "uniqueidentifier")]
+    [InlineData("int", 4, 10, 0, "int")]
+    public void FormatDeclaration_RestatesExistingColumnType(string typeName, short maxLength, byte precision, byte scale, string expected)
+    {
+        Assert.Equal(expected, SqlServerSchemaManager.FormatDeclaration(typeName, maxLength, precision, scale));
+    }
+
+    [Fact]
+    public void BuildRelaxNullability_UsesExistingTypeForColumnOutsideSourceLayout()
+    {
+        Assert.Equal(
+            "ALTER TABLE [dbo].[account] ALTER COLUMN [legacy] nvarchar(20) NULL;",
+            SqlServerSchemaManager.BuildRelaxNullability(RequiredColumnTable(), "legacy", "nvarchar(20)"));
+    }
+
     private static TableDefinition RequiredColumnTable() => new(
         "account",
         "accounts",

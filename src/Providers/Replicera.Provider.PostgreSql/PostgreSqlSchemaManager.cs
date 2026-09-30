@@ -100,10 +100,10 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
 
         var tableId = await EnsureOwnershipAsync(connection, transaction, jobName, source, cancellationToken).ConfigureAwait(false);
         if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
         {
             await using var reset = new NpgsqlCommand(
-                "UPDATE replicera.tables SET change_checkpoint = NULL, status = 'ResyncRequired' WHERE table_id = @table_id;",
+                "UPDATE replicera.tables SET change_checkpoint = NULL, status = 'ResyncRequired' WHERE table_id = @table_id AND change_checkpoint IS NOT NULL;",
                 connection,
                 transaction);
             reset.Parameters.AddWithValue("table_id", tableId);
