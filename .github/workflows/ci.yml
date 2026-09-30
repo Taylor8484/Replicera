@@ -113,6 +113,19 @@ jobs:
         run: '& (Join-Path "artifacts/self-contained" "${{ matrix.executable }}") --help'
       - name: Build versioned release package
         run: python scripts/package_release.py --version 0.1.0-ci --runtime ${{ matrix.runtime }}
+      - name: Smoke-test extracted release package
+        shell: pwsh
+        run: |
+          $package = "replicera-0.1.0-ci-${{ matrix.runtime }}"
+          New-Item -ItemType Directory -Force -Path artifacts/extracted | Out-Null
+          if ('${{ matrix.runtime }}'.StartsWith('win-')) {
+            Expand-Archive "artifacts/packages/$package.zip" -DestinationPath artifacts/extracted
+          } else {
+            tar -xzf "artifacts/packages/$package.tar.gz" -C artifacts/extracted
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & (Join-Path "artifacts/extracted/$package" "${{ matrix.executable }}") --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: replicera-${{ matrix.runtime }}

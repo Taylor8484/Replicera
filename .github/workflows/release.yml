@@ -46,7 +46,9 @@ jobs:
           if ('${{ matrix.runtime }}'.StartsWith('win-')) {
             Expand-Archive '${{ steps.archive.outputs.path }}' -DestinationPath artifacts/extracted
           } else {
+            New-Item -ItemType Directory -Force -Path artifacts/extracted | Out-Null
             tar -xzf '${{ steps.archive.outputs.path }}' -C artifacts/extracted
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           & (Join-Path "artifacts/extracted/replicera-${{ steps.version.outputs.version }}-${{ matrix.runtime }}" "${{ matrix.executable }}") --version
       - uses: actions/upload-artifact@v4
