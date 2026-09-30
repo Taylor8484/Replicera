@@ -1,11 +1,7 @@
 using Replicera.Cli;
 
 using var cancellation = new CancellationTokenSource();
-Console.CancelKeyPress += (_, eventArgs) =>
-{
-    eventArgs.Cancel = true;
-    cancellation.Cancel();
-};
+using var signals = new ShutdownSignals(cancellation);
 
 return await CliApplication.RunAsync(
     args,
