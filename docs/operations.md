@@ -4,7 +4,7 @@
 
 Start with `replicera init --config replicera.local.json` or copy the matching SQL Server, PostgreSQL, or Oracle file from `examples/`. Configuration stores environment-variable names, never secret values. Keep the local file outside source control; `replicera.local.json` and `.env*` are ignored.
 
-Client-secret authentication expects the secret in `authentication.secretEnvironmentVariable`. Certificate authentication expects a base64-encoded PKCS#12 document in that variable and an optional password in `certificatePasswordEnvironmentVariable`. Destinations read their connection string from the variable named by `connectionStringEnvironmentVariable`; select one with `provider: "sqlserver"`, `"postgresql"`, or `"oracle"`.
+Client-secret authentication expects the secret in `authentication.secretEnvironmentVariable`. Certificate authentication expects a base64-encoded PKCS#12 document in that variable and an optional password in `certificatePasswordEnvironmentVariable`. Destinations read their connection string from the variable named by `connectionStringEnvironmentVariable`; select one with `provider: "sqlserver"`, `"postgresql"`, or `"oracle"`. Each destination can set `commandTimeout` (`hh:mm:ss`, up to `24:00:00`) to limit how long a single database statement may run, such as applying a page or clearing a table for a full reload. It defaults to ten minutes; `00:00:00` removes the limit. For SQL Server and PostgreSQL it applies to every statement, and a `Command Timeout` already in the connection string is kept when `commandTimeout` is not set. For Oracle it applies to the statements that write synchronized rows. A statement that exceeds the limit fails the run with exit code `7` and leaves the checkpoint unchanged.
 
 Run `replicera inspect <table> --job <job>` before the first sync. Inspection reads metadata and reports proposed changes without enabling change tracking or changing the destination.
 
@@ -122,4 +122,4 @@ Dataverse requests are retried up to three times when Dataverse reports service-
 - **Exit 7:** check the failed run and table state, correct the transient or destination error, then rerun.
 - **Exit 8:** perform the controlled full resynchronization above.
 
-Use `replicera status --job <job> --json` to inspect table state and last success. Error output intentionally omits raw SDK and SQL messages because they may contain credentials, connection details, row values, or change tokens.
+Use `replicera status --job <job> --json` to inspect table state and last success. `status` only reads: against a destination Replicera has not used yet it reports every table as `Uninitialized`, and if the metadata was created by an earlier Replicera version it exits with code `6` and asks you to run `sync`, which upgrades it. Error output intentionally omits raw SDK and SQL messages because they may contain credentials, connection details, row values, or change tokens.

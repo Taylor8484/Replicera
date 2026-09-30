@@ -66,7 +66,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                 jobName,
                 syncType,
                 cancellationToken).ConfigureAwait(false);
-            var stagingName = SqlServerIdentifier.Normalize($"replicera_stage_{runId:N}");
+            var stagingName = SqlServerDmlBuilder.StagingTableName(runId);
             await ExecuteAsync(
                 connection,
                 transaction,
@@ -244,7 +244,8 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             var data = SqlServerBatchTable.Create(table, page);
             using (var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.CheckConstraints, transaction))
             {
-                bulkCopy.DestinationTableName = $"[dbo].{SqlServerIdentifier.Quote(stagingName)}";
+                bulkCopy.BulkCopyTimeout = connection.CommandTimeout;
+                bulkCopy.DestinationTableName = SqlServerDmlBuilder.Staging(stagingName);
                 foreach (DataColumn column in data.Columns)
                 {
                     _ = bulkCopy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
@@ -259,7 +260,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                 transaction,
                 SqlServerDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows: retainDeletedRows),
                 cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, $"TRUNCATE TABLE [dbo].{SqlServerIdentifier.Quote(stagingName)};", cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, SqlServerDmlBuilder.BuildTruncateStaging(stagingName), cancellationToken).ConfigureAwait(false);
             return result;
         }
 
@@ -335,7 +336,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             var layout = SqlServerTableLayout.GetColumns(table);
             var primaryKey = layout.Single(column => column.Source.IsPrimaryKey && !column.IsLookupTarget).Name;
             var target = $"[dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))}";
-            var staging = $"[dbo].{SqlServerIdentifier.Quote(stagingName)}";
+            var staging = SqlServerDmlBuilder.Staging(stagingName);
             var key = SqlServerIdentifier.Quote(primaryKey);
             var operation = SqlServerIdentifier.Quote(SqlServerDmlBuilder.OperationColumn);
             await using var command = connection.CreateCommand();

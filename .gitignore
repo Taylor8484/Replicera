@@ -12,6 +12,10 @@ __pycache__/
 *.nupkg
 *.snupkg
 replicera.local.json
+replicera.json
+*.pfx
+*.p12
+*.pem
 .env
 .env.*
 !.env.example

@@ -195,7 +195,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
             exists.Parameters.Add("table_name", OracleDbType.Varchar2).Value = destinationName;
             if (Convert.ToInt32(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) > 0)
             {
-                await ExecuteAsync(connection, null, $"DROP TABLE {OracleIdentifier.Quote(destinationName)}", cancellationToken).ConfigureAwait(false);
+                await ExecuteAsync(connection, null, $"DROP TABLE {OracleIdentifier.Quote(destinationName)} PURGE", cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -438,7 +438,8 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
 
     private static List<string> BuildRecreateTable(TableDefinition table) =>
     [
-        $"DROP TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}",
+        // PURGE keeps repeated reloads from filling the recycle bin with full copies of the table.
+        $"DROP TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} PURGE",
         OracleDdlBuilder.BuildCreateTable(table)
     ];
 

@@ -17,7 +17,7 @@ public sealed class SqlServerProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_SQL_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
@@ -49,7 +49,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
@@ -138,7 +138,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DisposedSession_RollsBackRowsAndCheckpoint()
     {
@@ -179,7 +179,125 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task StagingUsesSessionTemporaryTableOutsideTheDestinationDatabase()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Staged", 1)), TestCancellationToken);
+
+            await using var connection = new SqlConnection(database.ConnectionString);
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = connection.CreateCommand();
+            // The sync transaction holds metadata locks on objects it created, so read the catalog
+            // without waiting for them.
+            command.CommandText = """
+                SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+                SELECT COUNT_BIG(*) FROM sys.tables WHERE [name] LIKE N'%replicera[_]stage[_]%';
+                SELECT COUNT_BIG(*) FROM tempdb.sys.tables WHERE [name] LIKE N'#replicera[_]stage[_]%';
+                """;
+            await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+            Assert.True(await reader.ReadAsync(TestCancellationToken));
+            Assert.Equal(0, reader.GetInt64(0));
+            Assert.True(await reader.NextResultAsync(TestCancellationToken));
+            Assert.True(await reader.ReadAsync(TestCancellationToken));
+            Assert.True(reader.GetInt64(0) >= 1);
+            await session.CommitAsync("staged", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task Sync_SucceedsWithoutPermissionToCreateTables()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var login = $"replicera_dml_{Guid.NewGuid():N}";
+        var password = $"Aa1!{Guid.NewGuid():N}";
+        var admin = new SqlConnectionStringBuilder(database.ConnectionString);
+        try
+        {
+            await using (var connection = new SqlConnection(database.ConnectionString))
+            {
+                await connection.OpenAsync(TestCancellationToken);
+                await using var grant = connection.CreateCommand();
+                grant.CommandText = $"""
+                    CREATE LOGIN [{login}] WITH PASSWORD = N'{password}', CHECK_POLICY = OFF;
+                    CREATE USER [{login}] FOR LOGIN [{login}];
+                    GRANT SELECT, INSERT, UPDATE, DELETE ON [dbo].[account] TO [{login}];
+                    GRANT SELECT, INSERT, UPDATE ON SCHEMA::[replicera] TO [{login}];
+                    """;
+                _ = await grant.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+
+            var restricted = new SqlConnectionStringBuilder(database.ConnectionString)
+            {
+                UserID = login,
+                Password = password
+            }.ConnectionString;
+            var id = Guid.NewGuid();
+            var writer = new SqlServerDestinationWriter(restricted);
+            await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+            {
+                _ = await session.ApplyPageAsync(Page(Upsert(id, "Restricted", 1)), TestCancellationToken);
+                await session.CommitAsync("restricted", new(1, 1, 1, 0, 0), TestCancellationToken);
+            }
+
+            await using var verify = new SqlConnection(database.ConnectionString);
+            await verify.OpenAsync(TestCancellationToken);
+            await using var command = verify.CreateCommand();
+            command.CommandText = "SELECT [name] FROM [dbo].[account] WHERE [accountid] = @id;";
+            _ = command.Parameters.AddWithValue("@id", id);
+            Assert.Equal("Restricted", await command.ExecuteScalarAsync(TestCancellationToken));
+        }
+        finally
+        {
+            SqlConnection.ClearAllPools();
+            admin.InitialCatalog = "master";
+            await using var connection = new SqlConnection(admin.ConnectionString);
+            await connection.OpenAsync(CancellationToken.None);
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = $"IF SUSER_ID(N'{login}') IS NOT NULL DROP LOGIN [{login}];";
+            _ = await drop.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using var blocker = new SqlConnection(database.ConnectionString);
+        await blocker.OpenAsync(TestCancellationToken);
+        await using var blocking = (SqlTransaction)await blocker.BeginTransactionAsync(TestCancellationToken);
+        await using (var hold = blocker.CreateCommand())
+        {
+            hold.Transaction = blocking;
+            hold.CommandText = "SELECT COUNT_BIG(*) FROM [dbo].[account] WITH (TABLOCKX, HOLDLOCK);";
+            _ = await hold.ExecuteScalarAsync(TestCancellationToken);
+        }
+
+        var writer = new SqlServerProvider(TimeSpan.FromSeconds(2)).CreateWriter(database.ConnectionString);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        _ = await Assert.ThrowsAsync<SqlException>(
+            () => writer.BeginInitialSyncAsync("integration", table, TestCancellationToken));
+
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
+    }
+
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_ReadsUnmanagedTableWithoutMetadataSchema()
     {
@@ -209,7 +327,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(SchemaChangeKind.OwnershipConflict, Assert.Single(plan.Changes).Kind);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_AddsNullableColumnAndWidensText()
     {
@@ -268,7 +386,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(5, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
     {
@@ -309,7 +427,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(1, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
@@ -346,7 +464,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
@@ -402,7 +520,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
@@ -463,7 +581,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
@@ -503,7 +621,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(20, legacyColumn.MaxLength);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
@@ -526,7 +644,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [SkippableTheory]
+    [Theory]
     [Trait("Category", "SqlServerIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
@@ -596,7 +714,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
@@ -626,7 +744,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
@@ -664,7 +782,7 @@ public sealed class SqlServerProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
     {
@@ -675,7 +793,7 @@ public sealed class SqlServerProviderIntegrationTests
         await store.EnsureCreatedAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLock_DistinguishesLongJobNames()
     {
@@ -689,7 +807,7 @@ public sealed class SqlServerProviderIntegrationTests
             await provider.AcquireTableLockAsync(database.ConnectionString, job, "account", TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
@@ -708,7 +826,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SourceFailure_RollsBackDataAndRecordsDurableFailedRun()
     {
@@ -751,7 +869,65 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [SkippableFact]
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task Status_DoesNotCreateOrUpgradeMetadata()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var directory = Directory.CreateTempSubdirectory("replicera-status-");
+        var configPath = Path.Join(directory.FullName, "replicera.json");
+        var connectionVariable = $"REPLICERA_SQL_{Guid.NewGuid():N}";
+        try
+        {
+            Environment.SetEnvironmentVariable(connectionVariable, database.ConnectionString);
+            await ConfigurationFile.SaveAsync(configPath, Configuration(connectionVariable), TestCancellationToken);
+            using var output = new StringWriter();
+
+            var exitCode = await CliApplication.RunAsync(
+                ["status", "--job", "integration", "--json", "--config", configPath],
+                output,
+                TextWriter.Null,
+                TestCancellationToken);
+
+            Assert.Equal(0, exitCode);
+            using (var document = JsonDocument.Parse(output.ToString()))
+            {
+                Assert.Equal("Uninitialized", Assert.Single(document.RootElement.EnumerateArray()).GetProperty("state").GetString());
+            }
+
+            var provider = new SqlServerProvider();
+            Assert.Equal(MetadataStoreState.Missing, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+            await provider.EnsureMetadataStoreAsync(database.ConnectionString, TestCancellationToken);
+            Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+
+            await using (var connection = new SqlConnection(database.ConnectionString))
+            {
+                await connection.OpenAsync(TestCancellationToken);
+                await using var downgrade = connection.CreateCommand();
+                downgrade.CommandText = "DELETE FROM [replicera].[SchemaVersions] WHERE [Version] = 2;";
+                _ = await downgrade.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+
+            using var error = new StringWriter();
+            var outdatedExitCode = await CliApplication.RunAsync(
+                ["status", "--job", "integration", "--config", configPath],
+                TextWriter.Null,
+                error,
+                TestCancellationToken);
+
+            Assert.Equal(6, outdatedExitCode);
+            Assert.Contains("Run sync to upgrade it", error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(MetadataStoreState.Outdated, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(connectionVariable, null);
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task Status_JsonOutputReportsPersistedTableState()
     {
@@ -806,7 +982,47 @@ public sealed class SqlServerProviderIntegrationTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task RecordRepeatedWithinPage_IsAppliedOnceWithItsLastChange()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var repeated = Guid.NewGuid();
+        var removed = Guid.NewGuid();
+        var page = new SourcePage(
+            [
+                Upsert(repeated, "First", 1),
+                Upsert(removed, "Removed", 1),
+                Upsert(repeated, "Last", 2),
+                Delete(removed)
+            ],
+            null,
+            "repeated-checkpoint",
+            false);
+        var engine = new ReplicationEngine(
+            new PageSource([page]),
+            new SqlServerDestinationWriter(database.ConnectionString),
+            new SqlServerReplicationStateStore(database.ConnectionString));
+
+        var metrics = await engine.SyncAsync("integration", table, 100, TestCancellationToken);
+
+        Assert.Equal(4, metrics.RecordsReceived);
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT [accountid], [name], [statuscode] FROM [dbo].[account];";
+        await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(repeated, reader.GetGuid(0));
+        Assert.Equal("Last", reader.GetString(1));
+        Assert.Equal(2, reader.GetInt32(2));
+        Assert.False(await reader.ReadAsync(TestCancellationToken));
+    }
+
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task MultiPageSync_LoadsEveryPageAndCommitsTerminalCheckpoint()
     {
@@ -848,7 +1064,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("terminal-checkpoint", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SecondInitialSync_AtomicallyReplacesExistingRows()
     {
@@ -883,7 +1099,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.False(await reader.ReadAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SupportedValues_RoundTripAtBoundariesAndPreserveNulls()
     {
@@ -964,7 +1180,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.True(reader.IsDBNull(3));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task CheckpointPersistenceFailure_RollsBackAppliedRowsAndStagingTable()
     {
@@ -1020,7 +1236,46 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [SkippableFact]
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var initial = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await initial.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Committed", 1)), TestCancellationToken);
+            await initial.CommitAsync("stable", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        await using (var session = await writer.BeginIncrementalSyncAsync("integration", table, "stable", TestCancellationToken))
+        {
+            await cancellation.CancelAsync();
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.ApplyPageAsync(
+                Page(Upsert(Guid.NewGuid(), "Cancelled", 2)),
+                cancellation.Token));
+        }
+
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT_BIG(*) FROM [dbo].[account];
+            SELECT [ChangeCheckpoint] FROM [replicera].[Tables] WHERE [DataverseLogicalName] = N'account';
+            """;
+        await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(1, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync(TestCancellationToken));
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal("stable", reader.GetString(0));
+    }
+
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task AbruptConnectionTermination_RollsBackRowsCheckpointAndStagingTable()
     {

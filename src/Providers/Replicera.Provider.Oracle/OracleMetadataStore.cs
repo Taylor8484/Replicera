@@ -24,8 +24,20 @@ public sealed class OracleMetadataStore(string connectionString)
         }
         finally
         {
-            await ReleaseMetadataLockAsync(connection).ConfigureAwait(false);
+            if (!await TryReleaseMetadataLockAsync(connection).ConfigureAwait(false))
+            {
+                // The session lock would otherwise stay with the pooled session and block other runs.
+                OracleConnection.ClearPool(connection);
+            }
         }
+    }
+
+    /// <summary>Returns the applied metadata version, or 0 when the metadata store does not exist.</summary>
+    public async Task<int> GetSchemaVersionAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await GetSchemaVersionAsync(connection, cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ApplyMigrationsAsync(OracleConnection connection, CancellationToken cancellationToken)
@@ -85,13 +97,27 @@ public sealed class OracleMetadataStore(string connectionString)
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task ReleaseMetadataLockAsync(OracleConnection connection)
+    // DBMS_LOCK.RELEASE returns 0 when released and 4 when the session did not hold the lock.
+    private static async Task<bool> TryReleaseMetadataLockAsync(OracleConnection connection)
     {
-        await using var command = connection.CreateCommand();
-        command.BindByName = true;
-        command.CommandText = "DECLARE result INTEGER; BEGIN result := DBMS_LOCK.RELEASE(DBMS_UTILITY.GET_HASH_VALUE(:lock_name, 0, 1073741823)); END;";
-        command.Parameters.Add("lock_name", OracleDbType.NVarchar2).Value = MetadataLockName;
-        _ = await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.BindByName = true;
+            command.CommandText = "BEGIN :result := DBMS_LOCK.RELEASE(DBMS_UTILITY.GET_HASH_VALUE(:lock_name, 0, 1073741823)); END;";
+            var result = command.Parameters.Add("result", OracleDbType.Int32);
+            result.Direction = System.Data.ParameterDirection.Output;
+            command.Parameters.Add("lock_name", OracleDbType.NVarchar2).Value = MetadataLockName;
+            _ = await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+            var code = result.Value is global::Oracle.ManagedDataAccess.Types.OracleDecimal oracleResult
+                ? oracleResult.ToInt32()
+                : Convert.ToInt32(result.Value, System.Globalization.CultureInfo.InvariantCulture);
+            return code is 0 or 4;
+        }
+        catch (Exception exception) when (exception is OracleException or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     private static async Task ExecuteDdlAsync(

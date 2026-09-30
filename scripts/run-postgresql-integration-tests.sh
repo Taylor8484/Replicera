@@ -20,7 +20,7 @@ trap cleanup EXIT
 docker run --detach --name "$container_name" \
     --env POSTGRES_PASSWORD="$password" \
     --publish 127.0.0.1::5432 \
-    postgres:17-alpine >/dev/null
+    postgres:17.11-alpine >/dev/null
 
 port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort}}' "$container_name")"
 postgres_ready=false

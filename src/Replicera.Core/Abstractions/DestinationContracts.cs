@@ -25,6 +25,24 @@ public interface IDestinationProvider
         CancellationToken cancellationToken);
 
     Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken);
+
+    /// <summary>Reports whether the Replicera metadata store exists and is current, without changing it.</summary>
+    Task<MetadataStoreState> GetMetadataStoreStateAsync(string connectionString, CancellationToken cancellationToken);
+}
+
+public enum MetadataStoreState
+{
+    Missing,
+    Current,
+    Outdated
+}
+
+public static class MetadataStoreStates
+{
+    public static MetadataStoreState FromVersion(int version, int currentVersion) =>
+        version == 0 ? MetadataStoreState.Missing
+        : version >= currentVersion ? MetadataStoreState.Current
+        : MetadataStoreState.Outdated;
 }
 
 /// <summary>

@@ -8,8 +8,11 @@ using Replicera.Core.Models;
 
 namespace Replicera.Provider.Oracle;
 
-public sealed class OracleDestinationWriter(string connectionString) : IDestinationWriter
+public sealed class OracleDestinationWriter(string connectionString, TimeSpan? commandTimeout = null) : IDestinationWriter
 {
+    // Applies to the statements that write synchronized rows; ODP.NET has no connection-wide timeout.
+    private readonly int commandTimeoutSeconds = CommandTimeouts.ToSeconds(commandTimeout ?? DestinationConfiguration.DefaultCommandTimeout);
+
     public Task<IReplicationSession> BeginInitialSyncAsync(
         string jobName,
         TableDefinition table,
@@ -44,6 +47,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            _ = await SweepOrphanedStagingAsync(connection, OrphanedStagingAge, cancellationToken).ConfigureAwait(false);
             var tableId = await FindManagedTableAsync(connection, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
             var runId = Guid.NewGuid();
             stagingName = OracleIdentifier.Normalize($"REPLICERA_STAGE_{runId:N}");
@@ -64,7 +68,8 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                     connection,
                     transaction,
                     $"DELETE FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}",
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    commandTimeoutSeconds).ConfigureAwait(false);
             }
             else if (syncType == "Initial" && retainDeletedRows)
             {
@@ -72,10 +77,11 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                     connection,
                     transaction,
                     OracleDmlBuilder.BuildMarkAllSourceRemoved(table),
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    commandTimeoutSeconds).ConfigureAwait(false);
             }
 
-            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode);
+            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode, commandTimeoutSeconds);
         }
         catch
         {
@@ -93,6 +99,57 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    // A run creates its staging table and starts using it within seconds; a table this old that no
+    // session is using was left by a run that ended before it could drop it.
+    private static readonly TimeSpan OrphanedStagingAge = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Drops staging tables left behind by runs that ended abruptly. Oracle refuses to drop a
+    /// temporary table that another session is using (ORA-14452), so active runs are unaffected.
+    /// </summary>
+    internal static async Task<int> SweepOrphanedStagingAsync(
+        OracleConnection connection,
+        TimeSpan minimumAge,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<string>();
+        await using (var query = connection.CreateCommand())
+        {
+            query.BindByName = true;
+            query.CommandText = """
+                SELECT o.OBJECT_NAME
+                FROM USER_OBJECTS o
+                INNER JOIN USER_TABLES t ON t.TABLE_NAME = o.OBJECT_NAME
+                WHERE o.OBJECT_TYPE = 'TABLE'
+                  AND t.TEMPORARY = 'Y'
+                  AND o.OBJECT_NAME LIKE 'REPLICERA\_STAGE\_%' ESCAPE '\'
+                  AND o.CREATED <= SYSDATE - :minimum_age_days
+                """;
+            query.Parameters.Add("minimum_age_days", OracleDbType.Decimal).Value = (decimal)minimumAge.TotalDays;
+            await using var reader = await query.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                candidates.Add(reader.GetString(0));
+            }
+        }
+
+        var dropped = 0;
+        foreach (var name in candidates)
+        {
+            try
+            {
+                await ExecuteAsync(connection, null, OracleDmlBuilder.BuildDropStaging(name), cancellationToken).ConfigureAwait(false);
+                dropped++;
+            }
+            catch (OracleException exception) when (exception.Number is 14452 or 942)
+            {
+                // In use by a running synchronization, or already dropped by another run.
+            }
+        }
+
+        return dropped;
     }
 
     private static async Task<Guid> FindManagedTableAsync(
@@ -187,10 +244,12 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         OracleConnection connection,
         OracleTransaction? transaction,
         string sql,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int commandTimeoutSeconds = 0)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        command.CommandTimeout = commandTimeoutSeconds;
 #pragma warning disable CA2100 // SQL is generated solely from normalized and quoted provider-owned identifiers.
         command.CommandText = sql;
 #pragma warning restore CA2100
@@ -222,7 +281,8 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         string stagingName,
         string syncType,
         bool retainDeletedRows,
-        SynchronizationMode mode) : IReplicationSession
+        SynchronizationMode mode,
+        int commandTimeoutSeconds) : IReplicationSession
     {
         private bool completed;
 
@@ -236,9 +296,9 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
 
             await InsertStagingAsync(page, cancellationToken).ConfigureAwait(false);
             var result = await CountOperationsAsync(cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows), cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildDeleteStagingChanges(table, stagingName, retainDeletedRows), cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildClearStaging(stagingName), cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows), cancellationToken, commandTimeoutSeconds).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildDeleteStagingChanges(table, stagingName, retainDeletedRows), cancellationToken, commandTimeoutSeconds).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildClearStaging(stagingName), cancellationToken, commandTimeoutSeconds).ConfigureAwait(false);
             return result;
         }
 
@@ -327,6 +387,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
             var parameterNames = Enumerable.Range(0, columnNames.Length).Select(index => $":p{index}").ToArray();
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            command.CommandTimeout = commandTimeoutSeconds;
             command.BindByName = true;
             command.ArrayBindCount = page.Records.Count;
 #pragma warning disable CA2100 // Identifiers are normalized and quoted by the provider.
@@ -359,6 +420,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
             var operation = OracleIdentifier.Quote(OracleDmlBuilder.OperationColumn);
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            command.CommandTimeout = commandTimeoutSeconds;
 #pragma warning disable CA2100 // SQL is generated solely from normalized and quoted provider-owned identifiers.
             command.CommandText = $"""
                 SELECT

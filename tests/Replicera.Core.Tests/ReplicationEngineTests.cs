@@ -71,6 +71,96 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_StagesOnlyTheLastChangeForRecordsRepeatedInAPage()
+    {
+        var repeated = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var page = new SourcePage(
+        [
+            new SourceRecord(repeated, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "first" }),
+            new SourceRecord(other, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "other" }),
+            new SourceRecord(repeated, ChangeKind.Delete, new Dictionary<string, object?>()),
+            new SourceRecord(repeated, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "recreated" })
+        ],
+            null,
+            "token",
+            false);
+        var session = new FakeSession();
+        var engine = new ReplicationEngine(new FakeSource([page]), new FakeDestination(session), new FakeStateStore(null));
+
+        var metrics = await engine.SyncAsync("job", Table(), 100, CancellationToken.None);
+
+        var applied = Assert.Single(session.AppliedPages);
+        Assert.Equal([other, repeated], applied.Records.Select(record => record.Id));
+        var final = applied.Records[1];
+        Assert.Equal(ChangeKind.Upsert, final.Kind);
+        Assert.Equal("recreated", final.Values["name"]);
+        Assert.Equal(4, metrics.RecordsReceived);
+        Assert.Equal("token", session.CommittedCheckpoint);
+    }
+
+    [Fact]
+    public void Deduplicate_ReturnsPageUnchangedWhenRecordsAreUnique()
+    {
+        var page = Page(3, false, "token");
+
+        Assert.Same(page, ReplicationEngine.Deduplicate(page));
+    }
+
+    [Fact]
+    public async Task SyncAsync_DoesNotCommitWhenSourceStopsBeforeItsFinalPage()
+    {
+        var session = new FakeSession();
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, true, "token")]),
+            new FakeDestination(session),
+            new FakeStateStore(null));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Synchronization, error.Category);
+        Assert.Null(session.CommittedCheckpoint);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task SyncAsync_DoesNotCommitAnEmptyCheckpoint(string checkpoint)
+    {
+        var session = new FakeSession();
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, false, checkpoint)]),
+            new FakeDestination(session),
+            new FakeStateStore(null));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Synchronization, error.Category);
+        Assert.Null(session.CommittedCheckpoint);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ReportsUnrequestedCancellationAsTimeoutFailure()
+    {
+        var state = new FakeStateStore(null);
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, false, "token")]),
+            new FakeDestination(new FakeSession { ApplyException = new OperationCanceledException("ORA-01013") }),
+            state);
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Synchronization, error.Category);
+        Assert.Contains("timed out", error.Message, StringComparison.Ordinal);
+        Assert.IsType<OperationCanceledException>(error.InnerException);
+        Assert.Equal(TableState.Failed, state.MarkedState);
+        Assert.Contains("timed out", state.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SyncAsync_MarksExpiredCheckpointForResync()
     {
         var state = new FakeStateStore(
@@ -113,15 +203,17 @@ public sealed class ReplicationEngineTests
     public async Task SyncAsync_BoundsFailureRecordingWhenDestinationDoesNotRespond()
     {
         var state = new HangingStateStore();
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
         var engine = new ReplicationEngine(
-            new ThrowingSource(new OperationCanceledException()),
+            new ThrowingSource(new OperationCanceledException(cancellation.Token)),
             new FakeDestination(new FakeSession()),
             state,
             null,
             TimeSpan.FromMilliseconds(200));
 
-        var sync = engine.SyncAsync("job", Table(), 100, CancellationToken.None);
-        var finished = await Task.WhenAny(sync, Task.Delay(TimeSpan.FromSeconds(10)));
+        var sync = engine.SyncAsync("job", Table(), 100, cancellation.Token);
+        var finished = await Task.WhenAny(sync, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
 
         Assert.Same(sync, finished);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sync);
@@ -183,13 +275,15 @@ public sealed class ReplicationEngineTests
     {
         var session = new FakeSession();
         var state = new FakeStateStore(null);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
         var engine = new ReplicationEngine(
-            new ThrowingSource(new OperationCanceledException()),
+            new ThrowingSource(new OperationCanceledException(cancellation.Token)),
             new FakeDestination(session),
             state);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+            () => engine.SyncAsync("job", Table(), 100, cancellation.Token));
 
         Assert.Null(session.CommittedCheckpoint);
         Assert.True(session.Disposed);
@@ -412,12 +506,16 @@ public sealed class ReplicationEngineTests
 
         public bool Disposed { get; private set; }
 
+        public List<SourcePage> AppliedPages { get; } = [];
+
         public Task<PageApplyResult> ApplyPageAsync(SourcePage page, CancellationToken cancellationToken)
         {
             if (ApplyException is not null)
             {
                 throw ApplyException;
             }
+
+            AppliedPages.Add(page);
 
             var deleted = page.Records.Count(record => record.Kind == ChangeKind.Delete);
             return Task.FromResult(new PageApplyResult(page.Records.Count - deleted, 0, deleted));

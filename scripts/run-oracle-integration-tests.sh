@@ -21,7 +21,7 @@ trap cleanup EXIT
 docker run --detach --name "$container_name" \
     --env ORACLE_PWD="$admin_password" \
     --publish 127.0.0.1::1521 \
-    container-registry.oracle.com/database/free:latest >/dev/null
+    container-registry.oracle.com/database/free:23.26.3.0 >/dev/null
 
 port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "1521/tcp") 0).HostPort}}' "$container_name")"
 for _ in $(seq 1 180); do

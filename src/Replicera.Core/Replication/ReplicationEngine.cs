@@ -78,6 +78,7 @@ public sealed partial class ReplicationEngine
             long updated = 0;
             long deleted = 0;
             string? terminalCheckpoint = null;
+            var sourceHasMoreRecords = false;
 
             await foreach (var page in source.ReadChangesAsync(
                                table,
@@ -92,13 +93,14 @@ public sealed partial class ReplicationEngine
                         "The source returned records after its terminal checkpoint.");
                 }
 
-                var applied = await session.ApplyPageAsync(page, cancellationToken).ConfigureAwait(false);
+                var applied = await session.ApplyPageAsync(Deduplicate(page), cancellationToken).ConfigureAwait(false);
                 pages++;
                 received += page.Records.Count;
                 inserted += applied.Inserted;
                 updated += applied.Updated;
                 deleted += applied.Deleted;
                 terminalCheckpoint = page.DataCheckpoint;
+                sourceHasMoreRecords = page.HasMoreRecords;
                 LogPageApplied(
                     logger,
                     pages,
@@ -110,7 +112,14 @@ public sealed partial class ReplicationEngine
                     applied.Deleted);
             }
 
-            if (terminalCheckpoint is null)
+            if (sourceHasMoreRecords)
+            {
+                throw new RepliceraException(
+                    ErrorCategory.Synchronization,
+                    "The source stopped before its final page; the checkpoint was not advanced.");
+            }
+
+            if (string.IsNullOrWhiteSpace(terminalCheckpoint))
             {
                 throw new RepliceraException(
                     ErrorCategory.Synchronization,
@@ -159,7 +168,7 @@ public sealed partial class ReplicationEngine
                 FailureMessage(exception)).ConfigureAwait(false);
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             LogReplicationCancelled(
                 logger,
@@ -173,8 +182,12 @@ public sealed partial class ReplicationEngine
                 "Synchronization was cancelled before the checkpoint could be committed.").ConfigureAwait(false);
             throw;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
+            // A cancellation nobody requested comes from a driver whose statement timed out.
+            var message = exception is OperationCanceledException
+                ? "A database operation timed out before the checkpoint could be committed."
+                : "Synchronization failed before the checkpoint could be committed.";
             LogReplicationFailedUnexpectedly(
                 logger,
                 jobName,
@@ -184,12 +197,35 @@ public sealed partial class ReplicationEngine
                 table.LogicalName,
                 TableState.Failed,
                 ErrorCategory.Synchronization.ToString(),
-                "Synchronization failed before the checkpoint could be committed.").ConfigureAwait(false);
+                message).ConfigureAwait(false);
             throw new RepliceraException(
                 ErrorCategory.Synchronization,
-                "Synchronization failed before the checkpoint could be committed.",
+                message,
                 exception);
         }
+    }
+
+    /// <summary>
+    /// Keeps only the last change for each record in a page, so a record updated or deleted and
+    /// re-created within one page is staged once with its final state.
+    /// </summary>
+    internal static SourcePage Deduplicate(SourcePage page)
+    {
+        var lastIndex = new Dictionary<Guid, int>(page.Records.Count);
+        for (var index = 0; index < page.Records.Count; index++)
+        {
+            lastIndex[page.Records[index].Id] = index;
+        }
+
+        if (lastIndex.Count == page.Records.Count)
+        {
+            return page;
+        }
+
+        var records = page.Records
+            .Where((record, index) => lastIndex[record.Id] == index)
+            .ToArray();
+        return page with { Records = records };
     }
 
     private static string FailureMessage(RepliceraException exception) => exception.Category switch

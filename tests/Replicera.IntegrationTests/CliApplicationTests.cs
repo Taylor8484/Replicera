@@ -122,7 +122,7 @@ public sealed class CliApplicationTests
     public async Task BootstrapPermissions_RequiresExplicitTableScope()
     {
         var tablesFile = Path.Combine(Path.GetTempPath(), $"replicera-tables-{Guid.NewGuid():N}.json");
-        await File.WriteAllTextAsync(tablesFile, "[\"account\"]");
+        await File.WriteAllTextAsync(tablesFile, "[\"account\"]", TestContext.Current.CancellationToken);
         try
         {
             using var missingScopeError = new StringWriter();
@@ -159,7 +159,7 @@ public sealed class CliApplicationTests
     public async Task PermissionTablesFile_AcceptsOnlyJsonArrayOfTableNames(string content, string? expectedError)
     {
         var tablesFile = Path.Combine(Path.GetTempPath(), $"replicera-tables-{Guid.NewGuid():N}.json");
-        await File.WriteAllTextAsync(tablesFile, content);
+        await File.WriteAllTextAsync(tablesFile, content, TestContext.Current.CancellationToken);
         try
         {
             if (expectedError is null)
@@ -449,7 +449,7 @@ public sealed class CliApplicationTests
         try
         {
             _ = await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None);
-            var before = await File.ReadAllTextAsync(path);
+            var before = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
             using var error = new StringWriter();
 
             var exitCode = await CliApplication.RunAsync(
@@ -461,7 +461,7 @@ public sealed class CliApplicationTests
             Assert.Equal(2, exitCode);
             Assert.Contains("connectionStringEnvironmentVariable", error.ToString(), StringComparison.Ordinal);
             Assert.DoesNotContain("hunter2", error.ToString(), StringComparison.Ordinal);
-            Assert.Equal(before, await File.ReadAllTextAsync(path));
+            Assert.Equal(before, await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -488,14 +488,14 @@ public sealed class CliApplicationTests
         {
             _ = await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None);
             Assert.Equal(0, await CliApplication.RunAsync(arguments, TextWriter.Null, TextWriter.Null, CancellationToken.None));
-            var before = await File.ReadAllTextAsync(path);
+            var before = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
             using var error = new StringWriter();
 
             var duplicateExit = await CliApplication.RunAsync(arguments, TextWriter.Null, error, CancellationToken.None);
 
             Assert.Equal(2, duplicateExit);
             Assert.Contains("duplicated", error.ToString(), StringComparison.Ordinal);
-            Assert.Equal(before, await File.ReadAllTextAsync(path));
+            Assert.Equal(before, await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -573,6 +573,29 @@ public sealed class CliApplicationTests
         finally
         {
             Environment.SetEnvironmentVariable(variable, null);
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_ReturnsSynchronizationFailureAndReportsCancellation()
+    {
+        var directory = Directory.CreateTempSubdirectory("replicera-test-");
+        var path = Path.Join(directory.FullName, "replicera.json");
+        try
+        {
+            Assert.Equal(0, await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None));
+            using var cancellation = new CancellationTokenSource();
+            await cancellation.CancelAsync();
+            using var error = new StringWriter();
+
+            var exitCode = await CliApplication.RunAsync(["status", "--config", path], TextWriter.Null, error, cancellation.Token);
+
+            Assert.Equal(7, exitCode);
+            Assert.Contains("operation cancelled", error.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
             directory.Delete(true);
         }
     }

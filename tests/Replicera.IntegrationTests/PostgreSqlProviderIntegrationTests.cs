@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Npgsql;
 using Replicera.Cli;
+using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
 using Replicera.Core.Errors;
 using Replicera.Core.Models;
@@ -14,7 +15,7 @@ public sealed class PostgreSqlProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_POSTGRES_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
@@ -45,7 +46,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task StateStore_BeforeFirstSyncReturnsUninitializedState()
     {
@@ -55,7 +56,7 @@ public sealed class PostgreSqlProviderIntegrationTests
             .GetTableStateAsync("integration", "account", TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
@@ -112,7 +113,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Succeeded", reader.GetString(4));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DisposedSession_RollsBackRowsCheckpointAndTemporaryStaging()
     {
@@ -149,7 +150,86 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task CheckpointPersistenceFailure_RollsBackAppliedRows()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = new NpgsqlCommand("""
+                CREATE FUNCTION replicera.reject_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'Injected checkpoint persistence failure.';
+                END;
+                $$;
+                CREATE TRIGGER reject_checkpoint BEFORE UPDATE OF change_checkpoint ON replicera.tables
+                FOR EACH ROW EXECUTE FUNCTION replicera.reject_checkpoint();
+                """, connection);
+            _ = await command.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Must roll back", 1)), TestCancellationToken);
+            _ = await Assert.ThrowsAsync<PostgresException>(() => session.CommitAsync(
+                "rejected-checkpoint",
+                new SyncMetrics(1, 1, 1, 0, 0),
+                TestCancellationToken));
+        }
+
+        await AssertRowsAndCheckpointAsync(database.ConnectionString, 0, null);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var initial = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await initial.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Committed", 1)), TestCancellationToken);
+            await initial.CommitAsync("stable", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        await using (var session = await writer.BeginIncrementalSyncAsync("integration", table, "stable", TestCancellationToken))
+        {
+            await cancellation.CancelAsync();
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.ApplyPageAsync(
+                Page(Upsert(Guid.NewGuid(), "Cancelled", 2)),
+                cancellation.Token));
+        }
+
+        await AssertRowsAndCheckpointAsync(database.ConnectionString, 1, "stable");
+    }
+
+    private static async Task AssertRowsAndCheckpointAsync(string connectionString, long expectedRows, string? expectedCheckpoint)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT COUNT(*) FROM public.account;
+            SELECT change_checkpoint FROM replicera.tables WHERE dataverse_logical_name = 'account';
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(expectedRows, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync(TestCancellationToken));
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(expectedCheckpoint, reader.IsDBNull(0) ? null : reader.GetString(0));
+    }
+
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
@@ -185,7 +265,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
@@ -240,7 +320,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
@@ -300,7 +380,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
@@ -339,7 +419,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.True(relaxed!.Columns.Single(column => column.Name == "legacy").IsNullable);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
@@ -362,7 +442,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [SkippableTheory]
+    [Theory]
     [Trait("Category", "PostgreSqlIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
@@ -433,7 +513,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
@@ -463,7 +543,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
@@ -487,7 +567,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
     {
@@ -518,7 +598,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Null(state?.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
     {
@@ -529,7 +609,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         await store.EnsureCreatedAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
@@ -546,7 +626,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task FailureState_IsDurableAndSanitized()
     {
@@ -570,7 +650,44 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task MetadataStoreState_ReportsMissingThenCurrentWithoutCreatingMetadata()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var provider = new PostgreSqlProvider();
+
+        Assert.Equal(MetadataStoreState.Missing, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+        await provider.EnsureMetadataStoreAsync(database.ConnectionString, TestCancellationToken);
+        Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using var blocker = new NpgsqlConnection(database.ConnectionString);
+        await blocker.OpenAsync(TestCancellationToken);
+        await using var blocking = await blocker.BeginTransactionAsync(TestCancellationToken);
+        await using (var hold = new NpgsqlCommand("LOCK TABLE public.account IN ACCESS EXCLUSIVE MODE;", blocker, blocking))
+        {
+            _ = await hold.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var writer = new PostgreSqlProvider(TimeSpan.FromSeconds(2)).CreateWriter(database.ConnectionString);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(
+            () => writer.BeginInitialSyncAsync("integration", table, TestCancellationToken));
+
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
+    }
+
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
@@ -629,7 +746,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "description");
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task SupportedValues_RoundTripAndStatusUsesConfiguredProvider()
     {

@@ -44,6 +44,17 @@ public sealed record DestinationConfiguration
     public required string Provider { get; init; }
 
     public required string ConnectionStringEnvironmentVariable { get; init; }
+
+    /// <summary>
+    /// Longest time a single destination statement may run, such as applying a page or clearing a
+    /// table for a full reload. Zero means no limit. When omitted, a timeout set in the connection
+    /// string is kept; otherwise <see cref="DefaultCommandTimeout"/> applies.
+    /// </summary>
+    public TimeSpan? CommandTimeout { get; init; }
+
+    public static TimeSpan DefaultCommandTimeout { get; } = TimeSpan.FromMinutes(10);
+
+    public static TimeSpan MaximumCommandTimeout { get; } = TimeSpan.FromHours(24);
 }
 
 public sealed record JobConfiguration

@@ -23,6 +23,21 @@ public sealed class SqlServerMetadataStore(string connectionString)
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Returns the applied metadata version, or 0 when the metadata store does not exist.</summary>
+    public async Task<int> GetSchemaVersionAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            IF OBJECT_ID(N'[replicera].[SchemaVersions]', N'U') IS NULL
+                SELECT 0;
+            ELSE
+                SELECT ISNULL(MAX([Version]), 0) FROM [replicera].[SchemaVersions];
+            """;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     internal const string MigrationOne = """
         IF SCHEMA_ID(N'replicera') IS NULL
             EXEC(N'CREATE SCHEMA [replicera]');
