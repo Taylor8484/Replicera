@@ -6,6 +6,17 @@ namespace Replicera.Cli;
 
 internal sealed record WorkerScheduleState(ScheduleConfiguration? Schedule, bool JobExists);
 
+/// <summary>The outcome of one scheduled synchronization; the message is already sanitized.</summary>
+internal readonly record struct WorkerSyncResult(int ExitCode, string? Message = null)
+{
+    // Configuration, authentication, schema, and resynchronization failures do not clear on their
+    // own; an operator has to act before a later attempt can succeed.
+    public bool RequiresAttention => ExitCode is (int)Core.Errors.ExitCode.InvalidInput
+        or (int)Core.Errors.ExitCode.AuthenticationOrAuthorization
+        or (int)Core.Errors.ExitCode.SchemaOrMetadata
+        or (int)Core.Errors.ExitCode.ResynchronizationRequired;
+}
+
 internal static class ScheduledWorker
 {
     /// <summary>How often a disabled schedule is checked for re-enablement, at most.</summary>
@@ -17,7 +28,7 @@ internal static class ScheduledWorker
     public static Task<int> RunAsync(
         string jobName,
         ScheduleConfiguration schedule,
-        Func<CancellationToken, Task<int>> synchronize,
+        Func<CancellationToken, Task<WorkerSyncResult>> synchronize,
         TextWriter output,
         bool structuredOutput,
         CancellationToken cancellationToken,
@@ -45,7 +56,7 @@ internal static class ScheduledWorker
         string jobName,
         ScheduleConfiguration schedule,
         Func<CancellationToken, Task<WorkerScheduleState>> reloadSchedule,
-        Func<CancellationToken, Task<int>> synchronize,
+        Func<CancellationToken, Task<WorkerSyncResult>> synchronize,
         TextWriter output,
         bool structuredOutput,
         CancellationToken cancellationToken,
@@ -63,17 +74,23 @@ internal static class ScheduledWorker
         timeProvider ??= TimeProvider.System;
         jitter ??= Random.Shared.NextDouble;
         var consecutiveFailures = 0;
-        Task WriteAsync(string eventName, int? exitCode = null, string? message = null, TimeSpan? nextRunIn = null) => WriteEventAsync(
-            output,
-            structuredOutput,
-            timeProvider.GetUtcNow(),
-            eventName,
-            jobName,
-            schedule.Interval,
-            exitCode,
-            message,
-            nextRunIn is null ? null : consecutiveFailures,
-            nextRunIn);
+        Task WriteAsync(
+            string eventName,
+            int? exitCode = null,
+            string? message = null,
+            TimeSpan? nextRunIn = null,
+            bool? requiresAttention = null) => WriteEventAsync(
+                output,
+                structuredOutput,
+                timeProvider.GetUtcNow(),
+                eventName,
+                jobName,
+                schedule.Interval,
+                exitCode,
+                message,
+                nextRunIn is null ? null : consecutiveFailures,
+                nextRunIn,
+                requiresAttention);
 
         await WriteAsync("workerStarted").ConfigureAwait(false);
         try
@@ -130,10 +147,13 @@ internal static class ScheduledWorker
                 }
 
                 await WriteAsync("syncStarted").ConfigureAwait(false);
-                var exitCode = await synchronize(cancellationToken).ConfigureAwait(false);
-                consecutiveFailures = exitCode == (int)ExitCode.Success ? 0 : consecutiveFailures + 1;
+                var result = await synchronize(cancellationToken).ConfigureAwait(false);
+                var succeeded = result.ExitCode == (int)ExitCode.Success;
+                consecutiveFailures = succeeded ? 0 : consecutiveFailures + 1;
                 var nextRunIn = NextRunDelay(schedule.Interval, consecutiveFailures, jitter());
-                await WriteAsync(exitCode == (int)ExitCode.Success ? "syncSucceeded" : "syncFailed", exitCode, nextRunIn: nextRunIn).ConfigureAwait(false);
+                await (succeeded
+                    ? WriteAsync("syncSucceeded", result.ExitCode, nextRunIn: nextRunIn)
+                    : WriteAsync("syncFailed", result.ExitCode, result.Message, nextRunIn, result.RequiresAttention)).ConfigureAwait(false);
                 await delay(nextRunIn, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -173,7 +193,8 @@ internal static class ScheduledWorker
         int? exitCode,
         string? message,
         int? consecutiveFailures,
-        TimeSpan? nextRunIn)
+        TimeSpan? nextRunIn,
+        bool? requiresAttention)
     {
         if (structuredOutput)
         {
@@ -187,7 +208,8 @@ internal static class ScheduledWorker
                     exitCode,
                     message,
                     consecutiveFailures,
-                    nextRunIn
+                    nextRunIn,
+                    requiresAttention
                 },
                 JsonOptions));
         }
@@ -197,7 +219,7 @@ internal static class ScheduledWorker
             "workerStarted" => $"Worker started for job '{jobName}'; interval {interval:c}.",
             "syncStarted" => $"Starting scheduled synchronization for job '{jobName}'.",
             "syncSucceeded" => $"Scheduled synchronization for job '{jobName}' succeeded; next run in {nextRunIn ?? interval:c}.",
-            "syncFailed" => $"Scheduled synchronization for job '{jobName}' failed with exit code {exitCode} ({consecutiveFailures} consecutive); next run in {nextRunIn ?? interval:c}.",
+            "syncFailed" => $"Scheduled synchronization for job '{jobName}' failed with exit code {exitCode} ({consecutiveFailures} consecutive{(requiresAttention == true ? ", requires attention" : string.Empty)}); next run in {nextRunIn ?? interval:c}.{(message is null ? string.Empty : $" {message}")}",
             "workerStopped" when message is not null => $"Worker stopped for job '{jobName}': {message}",
             "workerStopped" => $"Worker stopped for job '{jobName}'.",
             "scheduleDisabled" => $"Schedule for job '{jobName}' is disabled; the worker is idle until it is enabled.",

@@ -393,7 +393,7 @@ public sealed class CliApplicationTests
             {
                 events.Add("sync");
                 cancellation.Cancel();
-                return Task.FromResult(0);
+                return Task.FromResult(new WorkerSyncResult(0));
             },
             output,
             false,
@@ -427,7 +427,7 @@ public sealed class CliApplicationTests
                     cancellation.Cancel();
                 }
 
-                return Task.FromResult(attempts == 1 ? 7 : 0);
+                return Task.FromResult(new WorkerSyncResult(attempts == 1 ? 7 : 0));
             },
             output,
             false,

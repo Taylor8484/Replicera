@@ -488,7 +488,7 @@ public static class CliApplication
             cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<int> ExecuteScheduledSyncAsync(
+    private static async Task<WorkerSyncResult> ExecuteScheduledSyncAsync(
         string path,
         string jobName,
         TextWriter output,
@@ -500,7 +500,7 @@ public static class CliApplication
     {
         try
         {
-            return await RuntimeCommands.SyncAsync(
+            return new WorkerSyncResult(await RuntimeCommands.SyncAsync(
                 path,
                 jobName,
                 null,
@@ -510,7 +510,7 @@ public static class CliApplication
                 structuredOutput,
                 verbose,
                 structuredDiagnostics,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -518,37 +518,41 @@ public static class CliApplication
         }
         catch (RepliceraException exception)
         {
-            await error.WriteLineAsync($"error: {exception.Message}").ConfigureAwait(false);
-            return (int)ExitCodeMapper.From(exception.Category);
+            return await FailAsync(error, (int)ExitCodeMapper.From(exception.Category), exception.Message).ConfigureAwait(false);
         }
         catch (DataverseConnectionException)
         {
-            await error.WriteLineAsync("error: Dataverse authentication or connection failed.").ConfigureAwait(false);
-            return (int)ExitCode.AuthenticationOrAuthorization;
+            return await FailAsync(error, (int)ExitCode.AuthenticationOrAuthorization, "Dataverse authentication or connection failed.").ConfigureAwait(false);
         }
         catch (DataverseOperationException)
         {
-            await error.WriteLineAsync("error: Dataverse operation failed.").ConfigureAwait(false);
-            return (int)ExitCode.SourceConnectivity;
+            return await FailAsync(error, (int)ExitCode.SourceConnectivity, "Dataverse operation failed.").ConfigureAwait(false);
         }
         catch (SqlException exception)
         {
-            await error.WriteLineAsync($"error: SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
-            return (int)ExitCode.DestinationConnectivity;
+            return await FailAsync(error, (int)ExitCode.DestinationConnectivity, $"SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
         }
         catch (DbException exception)
         {
-            await error.WriteLineAsync(exception.SqlState is { Length: > 0 } state
-                ? $"error: destination database operation failed (SQLSTATE {state})."
-                : "error: destination database operation failed.").ConfigureAwait(false);
-            return (int)ExitCode.DestinationConnectivity;
+            return await FailAsync(
+                error,
+                (int)ExitCode.DestinationConnectivity,
+                exception.SqlState is { Length: > 0 } state
+                    ? $"Destination database operation failed (SQLSTATE {state})."
+                    : "Destination database operation failed.").ConfigureAwait(false);
         }
         catch (Exception)
         {
-            await error.WriteLineAsync("error: unexpected internal failure.").ConfigureAwait(false);
-            return (int)ExitCode.Unexpected;
+            return await FailAsync(error, (int)ExitCode.Unexpected, "Unexpected internal failure.").ConfigureAwait(false);
         }
     }
+
+    private static async Task<WorkerSyncResult> FailAsync(TextWriter error, int exitCode, string message)
+    {
+        await error.WriteLineAsync($"error: {message}").ConfigureAwait(false);
+        return new WorkerSyncResult(exitCode, message);
+    }
+
 
     private static Task<int> AddTableAsync(
         IReadOnlyList<string> arguments,

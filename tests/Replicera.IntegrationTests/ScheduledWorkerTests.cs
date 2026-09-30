@@ -120,7 +120,7 @@ public sealed class ScheduledWorkerTests
                     cancellation.Cancel();
                 }
 
-                return Task.FromResult(exitCode);
+                return Task.FromResult(new WorkerSyncResult(exitCode, exitCode == 0 ? null : "Dataverse rejected the configured identity or authentication token."));
             },
             output,
             true,
@@ -141,6 +141,27 @@ public sealed class ScheduledWorkerTests
             .Select(document => (document.GetProperty("consecutiveFailures").GetInt32(), document.GetProperty("nextRunIn").GetString()))
             .ToList();
         Assert.Equal([(1, "00:05:00"), (2, "00:10:00"), (0, "00:05:00"), (1, "00:05:00")], results);
+        var failed = output.ToString()
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => JsonDocument.Parse(line).RootElement)
+            .First(document => document.GetProperty("eventName").GetString() == "syncFailed");
+        Assert.Equal(3, failed.GetProperty("exitCode").GetInt32());
+        Assert.True(failed.GetProperty("requiresAttention").GetBoolean());
+        Assert.Equal("Dataverse rejected the configured identity or authentication token.", failed.GetProperty("message").GetString());
+    }
+
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    [InlineData(4, false)]
+    [InlineData(5, false)]
+    [InlineData(6, true)]
+    [InlineData(7, false)]
+    [InlineData(8, true)]
+    [InlineData(70, false)]
+    public void WorkerSyncResult_FlagsFailuresThatNeedAnOperator(int exitCode, bool expected)
+    {
+        Assert.Equal(expected, new WorkerSyncResult(exitCode).RequiresAttention);
     }
 
     private static WorkerScheduleState Scheduled(ScheduleConfiguration? schedule) => new(schedule, true);
@@ -182,7 +203,7 @@ public sealed class ScheduledWorkerTests
                         cancellation.Cancel();
                     }
 
-                    return Task.FromResult(0);
+                    return Task.FromResult(new WorkerSyncResult(0));
                 },
                 writer,
                 true,
