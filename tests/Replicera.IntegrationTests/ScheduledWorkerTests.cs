@@ -83,6 +83,66 @@ public sealed class ScheduledWorkerTests
         Assert.Contains("At least one table is required.", invalid.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(300, 0, 0.9, 300)]
+    [InlineData(300, 1, 0.5, 300)]
+    [InlineData(300, 2, 0.5, 600)]
+    [InlineData(300, 3, 0.5, 1200)]
+    [InlineData(300, 4, 0.5, 2400)]
+    [InlineData(300, 5, 0.5, 3600)]
+    [InlineData(300, 2, 0.0, 480)]
+    [InlineData(300, 2, 1.0, 720)]
+    [InlineData(1, 40, 0.5, 3600)]
+    [InlineData(7200, 3, 0.5, 7200)]
+    public void NextRunDelay_DoublesAfterEachFailureUpToCeiling(int intervalSeconds, int failures, double jitter, int expectedSeconds)
+    {
+        Assert.Equal(
+            TimeSpan.FromSeconds(expectedSeconds),
+            ScheduledWorker.NextRunDelay(TimeSpan.FromSeconds(intervalSeconds), failures, jitter));
+    }
+
+    [Fact]
+    public async Task RunAsync_BacksOffAfterConsecutiveFailuresAndResetsAfterSuccess()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var output = new StringWriter();
+        var exitCodes = new Queue<int>([3, 3, 0, 3]);
+        var delays = new List<TimeSpan>();
+
+        await ScheduledWorker.RunAsync(
+            "job",
+            FiveMinutes,
+            _ =>
+            {
+                var exitCode = exitCodes.Dequeue();
+                if (exitCodes.Count == 0)
+                {
+                    cancellation.Cancel();
+                }
+
+                return Task.FromResult(exitCode);
+            },
+            output,
+            true,
+            cancellation.Token,
+            (duration, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                delays.Add(duration);
+                return Task.CompletedTask;
+            },
+            jitter: () => 0.5);
+
+        Assert.Equal([TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(5)], delays);
+        var results = output.ToString()
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => JsonDocument.Parse(line).RootElement)
+            .Where(document => document.GetProperty("eventName").GetString() is "syncFailed" or "syncSucceeded")
+            .Select(document => (document.GetProperty("consecutiveFailures").GetInt32(), document.GetProperty("nextRunIn").GetString()))
+            .ToList();
+        Assert.Equal([(1, "00:05:00"), (2, "00:10:00"), (0, "00:05:00"), (1, "00:05:00")], results);
+    }
+
     private static WorkerScheduleState Scheduled(ScheduleConfiguration? schedule) => new(schedule, true);
 
     private sealed class Harness(params object[] reloads)

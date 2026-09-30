@@ -11,6 +11,9 @@ internal static class ScheduledWorker
     /// <summary>How often a disabled schedule is checked for re-enablement, at most.</summary>
     internal static readonly TimeSpan DisabledPollInterval = TimeSpan.FromMinutes(1);
 
+    /// <summary>The longest wait after repeated failures, unless the interval itself is longer.</summary>
+    internal static readonly TimeSpan MaximumFailureBackoff = TimeSpan.FromHours(1);
+
     public static Task<int> RunAsync(
         string jobName,
         ScheduleConfiguration schedule,
@@ -19,7 +22,8 @@ internal static class ScheduledWorker
         bool structuredOutput,
         CancellationToken cancellationToken,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        TimeProvider? timeProvider = null) => RunAsync(
+        TimeProvider? timeProvider = null,
+        Func<double>? jitter = null) => RunAsync(
             jobName,
             schedule,
             _ => Task.FromResult(new WorkerScheduleState(schedule, true)),
@@ -28,7 +32,8 @@ internal static class ScheduledWorker
             structuredOutput,
             cancellationToken,
             delay,
-            timeProvider);
+            timeProvider,
+            jitter);
 
     /// <summary>
     /// Runs the job on its schedule, reloading the schedule before every cycle. A disabled or
@@ -45,7 +50,8 @@ internal static class ScheduledWorker
         bool structuredOutput,
         CancellationToken cancellationToken,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Func<double>? jitter = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(schedule);
@@ -55,7 +61,9 @@ internal static class ScheduledWorker
 
         delay ??= static (duration, token) => Task.Delay(duration, token);
         timeProvider ??= TimeProvider.System;
-        Task WriteAsync(string eventName, int? exitCode = null, string? message = null) => WriteEventAsync(
+        jitter ??= Random.Shared.NextDouble;
+        var consecutiveFailures = 0;
+        Task WriteAsync(string eventName, int? exitCode = null, string? message = null, TimeSpan? nextRunIn = null) => WriteEventAsync(
             output,
             structuredOutput,
             timeProvider.GetUtcNow(),
@@ -63,7 +71,9 @@ internal static class ScheduledWorker
             jobName,
             schedule.Interval,
             exitCode,
-            message);
+            message,
+            nextRunIn is null ? null : consecutiveFailures,
+            nextRunIn);
 
         await WriteAsync("workerStarted").ConfigureAwait(false);
         try
@@ -121,8 +131,10 @@ internal static class ScheduledWorker
 
                 await WriteAsync("syncStarted").ConfigureAwait(false);
                 var exitCode = await synchronize(cancellationToken).ConfigureAwait(false);
-                await WriteAsync(exitCode == (int)ExitCode.Success ? "syncSucceeded" : "syncFailed", exitCode).ConfigureAwait(false);
-                await delay(schedule.Interval, cancellationToken).ConfigureAwait(false);
+                consecutiveFailures = exitCode == (int)ExitCode.Success ? 0 : consecutiveFailures + 1;
+                var nextRunIn = NextRunDelay(schedule.Interval, consecutiveFailures, jitter());
+                await WriteAsync(exitCode == (int)ExitCode.Success ? "syncSucceeded" : "syncFailed", exitCode, nextRunIn: nextRunIn).ConfigureAwait(false);
+                await delay(nextRunIn, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -130,6 +142,22 @@ internal static class ScheduledWorker
             await WriteAsync("workerStopped").ConfigureAwait(false);
             return (int)ExitCode.Success;
         }
+    }
+
+    // Repeated failures wait twice as long each time, starting from the interval, so a permanent
+    // problem such as rejected credentials does not generate a request every interval. Jitter of
+    // plus or minus 20 percent keeps workers that failed together from retrying together, and the
+    // wait never exceeds the larger of the interval and the backoff ceiling.
+    internal static TimeSpan NextRunDelay(TimeSpan interval, int consecutiveFailures, double jitter)
+    {
+        if (consecutiveFailures == 0)
+        {
+            return interval;
+        }
+
+        var ceiling = interval > MaximumFailureBackoff ? interval : MaximumFailureBackoff;
+        var backoff = interval.Ticks * Math.Pow(2, Math.Min(consecutiveFailures - 1, 30)) * (0.8 + (0.4 * jitter));
+        return backoff < ceiling.Ticks ? TimeSpan.FromTicks((long)backoff) : ceiling;
     }
 
     private static TimeSpan IdlePollInterval(ScheduleConfiguration schedule) =>
@@ -143,7 +171,9 @@ internal static class ScheduledWorker
         string jobName,
         TimeSpan interval,
         int? exitCode,
-        string? message)
+        string? message,
+        int? consecutiveFailures,
+        TimeSpan? nextRunIn)
     {
         if (structuredOutput)
         {
@@ -155,7 +185,9 @@ internal static class ScheduledWorker
                     job = jobName,
                     interval,
                     exitCode,
-                    message
+                    message,
+                    consecutiveFailures,
+                    nextRunIn
                 },
                 JsonOptions));
         }
@@ -164,8 +196,8 @@ internal static class ScheduledWorker
         {
             "workerStarted" => $"Worker started for job '{jobName}'; interval {interval:c}.",
             "syncStarted" => $"Starting scheduled synchronization for job '{jobName}'.",
-            "syncSucceeded" => $"Scheduled synchronization for job '{jobName}' succeeded; next run in {interval:c}.",
-            "syncFailed" => $"Scheduled synchronization for job '{jobName}' failed with exit code {exitCode}; next run in {interval:c}.",
+            "syncSucceeded" => $"Scheduled synchronization for job '{jobName}' succeeded; next run in {nextRunIn ?? interval:c}.",
+            "syncFailed" => $"Scheduled synchronization for job '{jobName}' failed with exit code {exitCode} ({consecutiveFailures} consecutive); next run in {nextRunIn ?? interval:c}.",
             "workerStopped" when message is not null => $"Worker stopped for job '{jobName}': {message}",
             "workerStopped" => $"Worker stopped for job '{jobName}'.",
             "scheduleDisabled" => $"Schedule for job '{jobName}' is disabled; the worker is idle until it is enabled.",
