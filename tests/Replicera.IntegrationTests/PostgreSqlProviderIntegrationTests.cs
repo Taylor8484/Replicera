@@ -152,6 +152,85 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task CheckpointPersistenceFailure_RollsBackAppliedRows()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = new NpgsqlCommand("""
+                CREATE FUNCTION replicera.reject_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'Injected checkpoint persistence failure.';
+                END;
+                $$;
+                CREATE TRIGGER reject_checkpoint BEFORE UPDATE OF change_checkpoint ON replicera.tables
+                FOR EACH ROW EXECUTE FUNCTION replicera.reject_checkpoint();
+                """, connection);
+            _ = await command.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Must roll back", 1)), TestCancellationToken);
+            _ = await Assert.ThrowsAsync<PostgresException>(() => session.CommitAsync(
+                "rejected-checkpoint",
+                new SyncMetrics(1, 1, 1, 0, 0),
+                TestCancellationToken));
+        }
+
+        await AssertRowsAndCheckpointAsync(database.ConnectionString, 0, null);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var initial = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await initial.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Committed", 1)), TestCancellationToken);
+            await initial.CommitAsync("stable", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        await using (var session = await writer.BeginIncrementalSyncAsync("integration", table, "stable", TestCancellationToken))
+        {
+            await cancellation.CancelAsync();
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.ApplyPageAsync(
+                Page(Upsert(Guid.NewGuid(), "Cancelled", 2)),
+                cancellation.Token));
+        }
+
+        await AssertRowsAndCheckpointAsync(database.ConnectionString, 1, "stable");
+    }
+
+    private static async Task AssertRowsAndCheckpointAsync(string connectionString, long expectedRows, string? expectedCheckpoint)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT COUNT(*) FROM public.account;
+            SELECT change_checkpoint FROM replicera.tables WHERE dataverse_logical_name = 'account';
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(expectedRows, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync(TestCancellationToken));
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(expectedCheckpoint, reader.IsDBNull(0) ? null : reader.GetString(0));
+    }
+
+    [SkippableFact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
         await using var database = await TestDatabase.CreateAsync();

@@ -578,6 +578,29 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
+    public async Task Cancellation_ReturnsSynchronizationFailureAndReportsCancellation()
+    {
+        var directory = Directory.CreateTempSubdirectory("replicera-test-");
+        var path = Path.Combine(directory.FullName, "replicera.json");
+        try
+        {
+            Assert.Equal(0, await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None));
+            using var cancellation = new CancellationTokenSource();
+            await cancellation.CancelAsync();
+            using var error = new StringWriter();
+
+            var exitCode = await CliApplication.RunAsync(["status", "--config", path], TextWriter.Null, error, cancellation.Token);
+
+            Assert.Equal(7, exitCode);
+            Assert.Contains("operation cancelled", error.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            directory.Delete(true);
+        }
+    }
+
+    [Fact]
     public async Task InteractiveConfiguration_PromptsForMissingSourceAndDestinationValues()
     {
         var directory = Directory.CreateTempSubdirectory("replicera-test-");

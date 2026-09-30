@@ -852,6 +852,108 @@ public sealed class OracleProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "OracleIntegration")]
+    public async Task CheckpointPersistenceFailure_RollsBackAppliedRows()
+    {
+        var connectionString = ConnectionString();
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_ckpt_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        // CHANGE_CHECKPOINT is an NCLOB, which a column trigger cannot name, so reject the commit's
+        // status change instead; it is written in the same statement as the checkpoint.
+        var trigger = OracleIdentifier.Normalize($"REJECT_CKPT_{suffix}");
+        await ExecuteOracleAsync(connectionString, $"""
+            CREATE TRIGGER {OracleIdentifier.Quote(trigger)}
+            BEFORE UPDATE OF STATUS ON REPLICERA_TABLES
+            FOR EACH ROW
+            WHEN (NEW.REPLICATION_JOB_ID = '{job}' AND NEW.STATUS = 'Healthy')
+            BEGIN
+                RAISE_APPLICATION_ERROR(-20001, 'Injected checkpoint persistence failure.');
+            END;
+            """);
+        try
+        {
+            var writer = new OracleDestinationWriter(connectionString);
+            await using (var session = await writer.BeginInitialSyncAsync(job, table, TestCancellationToken))
+            {
+                _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Must roll back", 1)), TestCancellationToken);
+                var error = await Assert.ThrowsAsync<OracleException>(() => session.CommitAsync(
+                    "rejected-checkpoint",
+                    new SyncMetrics(1, 1, 1, 0, 0),
+                    TestCancellationToken));
+                Assert.Equal(20001, error.Number);
+            }
+
+            await AssertOracleRowsAndCheckpointAsync(connectionString, job, table, 0, null);
+        }
+        finally
+        {
+            await ExecuteOracleAsync(connectionString, $"DROP TRIGGER {OracleIdentifier.Quote(trigger)}");
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "OracleIntegration")]
+    public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
+    {
+        var connectionString = ConnectionString();
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_cancel_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        var writer = new OracleDestinationWriter(connectionString);
+        await using (var initial = await writer.BeginInitialSyncAsync(job, table, TestCancellationToken))
+        {
+            _ = await initial.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Committed", 1)), TestCancellationToken);
+            await initial.CommitAsync("stable", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        await using (var session = await writer.BeginIncrementalSyncAsync(job, table, "stable", TestCancellationToken))
+        {
+            await cancellation.CancelAsync();
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.ApplyPageAsync(
+                Page(Upsert(Guid.NewGuid(), "Cancelled", 2)),
+                cancellation.Token));
+        }
+
+        await AssertOracleRowsAndCheckpointAsync(connectionString, job, table, 1, "stable");
+    }
+
+    private static async Task ExecuteOracleAsync(string connectionString, string sql)
+    {
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        _ = await command.ExecuteNonQueryAsync(TestCancellationToken);
+    }
+
+    private static async Task AssertOracleRowsAndCheckpointAsync(
+        string connectionString,
+        string job,
+        TableDefinition table,
+        long expectedRows,
+        string? expectedCheckpoint)
+    {
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using (var rows = connection.CreateCommand())
+        {
+            rows.CommandText = $"SELECT COUNT(*) FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}";
+            Assert.Equal(expectedRows, Convert.ToInt64(await rows.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        await using var checkpoint = connection.CreateCommand();
+        checkpoint.BindByName = true;
+        checkpoint.CommandText = "SELECT CHANGE_CHECKPOINT FROM REPLICERA_TABLES WHERE REPLICATION_JOB_ID = :job_name";
+        checkpoint.Parameters.Add("job_name", OracleDbType.NVarchar2).Value = job;
+        var value = await checkpoint.ExecuteScalarAsync(TestCancellationToken);
+        Assert.Equal(expectedCheckpoint, value is DBNull or null ? null : (string)value);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "OracleIntegration")]
     public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
     {
         var connectionString = ConnectionString();

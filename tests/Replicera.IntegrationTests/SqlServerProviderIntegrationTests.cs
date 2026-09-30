@@ -1238,6 +1238,45 @@ public sealed class SqlServerProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var initial = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await initial.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Committed", 1)), TestCancellationToken);
+            await initial.CommitAsync("stable", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        await using (var session = await writer.BeginIncrementalSyncAsync("integration", table, "stable", TestCancellationToken))
+        {
+            await cancellation.CancelAsync();
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => session.ApplyPageAsync(
+                Page(Upsert(Guid.NewGuid(), "Cancelled", 2)),
+                cancellation.Token));
+        }
+
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT_BIG(*) FROM [dbo].[account];
+            SELECT [ChangeCheckpoint] FROM [replicera].[Tables] WHERE [DataverseLogicalName] = N'account';
+            """;
+        await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(1, reader.GetInt64(0));
+        Assert.True(await reader.NextResultAsync(TestCancellationToken));
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal("stable", reader.GetString(0));
+    }
+
+    [SkippableFact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task AbruptConnectionTermination_RollsBackRowsCheckpointAndStagingTable()
     {
         await using var database = await TestDatabase.CreateAsync();
