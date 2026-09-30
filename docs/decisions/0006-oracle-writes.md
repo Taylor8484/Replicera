@@ -8,7 +8,7 @@ Accepted
 
 Use ODP.NET array binding to load each source page into a uniquely named global temporary table created with `ON COMMIT DELETE ROWS`. Apply upserts with a set-based Oracle `MERGE`, apply physical deletes separately, and clear staging rows with transactional `DELETE` between pages.
 
-Acquire a `FOR UPDATE NOWAIT` lock on the managed-table metadata row. Keep target mutations, run metrics, and the opaque checkpoint in the same Oracle transaction. Create and drop the temporary-table definition outside that transaction because Oracle DDL commits implicitly; a process failure can therefore leave only an empty, uniquely named staging definition, never uncommitted rows or an advanced checkpoint.
+Acquire a `FOR UPDATE NOWAIT` lock on the managed-table metadata row. Keep target mutations, run metrics, and the opaque checkpoint in the same Oracle transaction. Create and drop the temporary-table definition outside that transaction because Oracle DDL commits implicitly; a process failure can therefore leave only an empty, uniquely named staging definition, never uncommitted rows or an advanced checkpoint. Later runs drop such definitions once they are an hour old; Oracle refuses to drop a temporary table another session is using, so active runs keep theirs. Dropped tables bypass the recycle bin, and a lock release that fails discards the pooled session so its session lock cannot outlive the run.
 
 ## Consequences
 

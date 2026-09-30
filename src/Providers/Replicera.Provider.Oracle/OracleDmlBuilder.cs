@@ -81,7 +81,7 @@ public static class OracleDmlBuilder
         $"DELETE FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(stagingTable))}";
 
     public static string BuildDropStaging(string stagingTable) =>
-        $"DROP TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(stagingTable))}";
+        $"DROP TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(stagingTable))} PURGE";
 
     private static string Managed(string name) => OracleIdentifier.Quote(OracleIdentifier.Normalize(name));
 }

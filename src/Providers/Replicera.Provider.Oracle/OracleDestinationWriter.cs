@@ -47,6 +47,7 @@ public sealed class OracleDestinationWriter(string connectionString, TimeSpan? c
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            _ = await SweepOrphanedStagingAsync(connection, OrphanedStagingAge, cancellationToken).ConfigureAwait(false);
             var tableId = await FindManagedTableAsync(connection, jobName, table.LogicalName, cancellationToken).ConfigureAwait(false);
             var runId = Guid.NewGuid();
             stagingName = OracleIdentifier.Normalize($"REPLICERA_STAGE_{runId:N}");
@@ -98,6 +99,57 @@ public sealed class OracleDestinationWriter(string connectionString, TimeSpan? c
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    // A run creates its staging table and starts using it within seconds; a table this old that no
+    // session is using was left by a run that ended before it could drop it.
+    private static readonly TimeSpan OrphanedStagingAge = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Drops staging tables left behind by runs that ended abruptly. Oracle refuses to drop a
+    /// temporary table that another session is using (ORA-14452), so active runs are unaffected.
+    /// </summary>
+    internal static async Task<int> SweepOrphanedStagingAsync(
+        OracleConnection connection,
+        TimeSpan minimumAge,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<string>();
+        await using (var query = connection.CreateCommand())
+        {
+            query.BindByName = true;
+            query.CommandText = """
+                SELECT o.OBJECT_NAME
+                FROM USER_OBJECTS o
+                INNER JOIN USER_TABLES t ON t.TABLE_NAME = o.OBJECT_NAME
+                WHERE o.OBJECT_TYPE = 'TABLE'
+                  AND t.TEMPORARY = 'Y'
+                  AND o.OBJECT_NAME LIKE 'REPLICERA\_STAGE\_%' ESCAPE '\'
+                  AND o.CREATED <= SYSDATE - :minimum_age_days
+                """;
+            query.Parameters.Add("minimum_age_days", OracleDbType.Decimal).Value = (decimal)minimumAge.TotalDays;
+            await using var reader = await query.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                candidates.Add(reader.GetString(0));
+            }
+        }
+
+        var dropped = 0;
+        foreach (var name in candidates)
+        {
+            try
+            {
+                await ExecuteAsync(connection, null, OracleDmlBuilder.BuildDropStaging(name), cancellationToken).ConfigureAwait(false);
+                dropped++;
+            }
+            catch (OracleException exception) when (exception.Number is 14452 or 942)
+            {
+                // In use by a running synchronization, or already dropped by another run.
+            }
+        }
+
+        return dropped;
     }
 
     private static async Task<Guid> FindManagedTableAsync(

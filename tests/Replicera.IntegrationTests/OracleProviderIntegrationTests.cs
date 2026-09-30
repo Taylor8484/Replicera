@@ -49,6 +49,83 @@ public sealed class OracleProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "OracleIntegration")]
+    public async Task ReloadRecreate_DoesNotLeaveTheOldTableInTheRecycleBin()
+    {
+        var connectionString = ConnectionString();
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_reload_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        var schema = new OracleSchemaManager(connectionString);
+
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(job, table, TestCancellationToken), new SchemaPolicy(), SynchronizationMode.Reload);
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RecreateTable);
+        await schema.ApplySchemaPlanAsync(job, table, plan, TestCancellationToken);
+
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.BindByName = true;
+        command.CommandText = "SELECT COUNT(*) FROM USER_RECYCLEBIN WHERE ORIGINAL_NAME = :table_name";
+        command.Parameters.Add("table_name", OracleDbType.Varchar2).Value = OracleIdentifier.Normalize(table.DestinationName);
+        Assert.Equal(0, Convert.ToInt32(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [SkippableFact]
+    [Trait("Category", "OracleIntegration")]
+    public async Task StagingSweep_DropsIdleOrphansButNotStagingInUse()
+    {
+        var connectionString = ConnectionString();
+        var table = AccountsTable($"account_sweep_{UniqueSuffix()}");
+        var orphan = OracleIdentifier.Normalize($"REPLICERA_STAGE_{Guid.NewGuid():N}");
+        var active = OracleIdentifier.Normalize($"REPLICERA_STAGE_{Guid.NewGuid():N}");
+        await using var owner = new OracleConnection(connectionString);
+        await owner.OpenAsync(TestCancellationToken);
+        foreach (var name in new[] { orphan, active })
+        {
+            await using var create = owner.CreateCommand();
+            create.CommandText = OracleDmlBuilder.BuildCreateStaging(table, name);
+            _ = await create.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        await using var transaction = owner.BeginTransaction();
+        await using (var use = owner.CreateCommand())
+        {
+            use.Transaction = transaction;
+            use.CommandText = $"INSERT INTO {OracleIdentifier.Quote(active)} ({OracleIdentifier.Quote(OracleDmlBuilder.OperationColumn)}) VALUES ('D')";
+            _ = await use.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        await using (var sweeper = new OracleConnection(connectionString))
+        {
+            await sweeper.OpenAsync(TestCancellationToken);
+            _ = await OracleDestinationWriter.SweepOrphanedStagingAsync(sweeper, TimeSpan.Zero, TestCancellationToken);
+        }
+
+        await using (var check = owner.CreateCommand())
+        {
+            check.BindByName = true;
+            check.CommandText = "SELECT TABLE_NAME FROM USER_TABLES WHERE TABLE_NAME IN (:orphan, :active)";
+            check.Parameters.Add("orphan", OracleDbType.Varchar2).Value = orphan;
+            check.Parameters.Add("active", OracleDbType.Varchar2).Value = active;
+            await using var reader = await check.ExecuteReaderAsync(TestCancellationToken);
+            var remaining = new List<string>();
+            while (await reader.ReadAsync(TestCancellationToken))
+            {
+                remaining.Add(reader.GetString(0));
+            }
+
+            Assert.Equal([active], remaining);
+        }
+
+        await transaction.RollbackAsync(TestCancellationToken);
+        await using var drop = owner.CreateCommand();
+        drop.CommandText = OracleDmlBuilder.BuildDropStaging(active);
+        _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "OracleIntegration")]
     public async Task ConnectionProbe_ConnectsToConfiguredDatabase()
     {
         var connectionString = ConnectionString();
