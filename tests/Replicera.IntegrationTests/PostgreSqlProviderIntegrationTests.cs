@@ -330,6 +330,49 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await new PostgreSqlMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        await schema.ApplySchemaPlanAsync(
+            "integration",
+            table,
+            SchemaPlanner.Plan(table, null, new SchemaPolicy(), SynchronizationMode.NoDataLoss),
+            TestCancellationToken);
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var legacy = new NpgsqlCommand(
+                "ALTER TABLE public.account ADD COLUMN legacy character varying(20) NOT NULL DEFAULT 'x'; ALTER TABLE public.account ALTER COLUMN legacy DROP DEFAULT;",
+                connection);
+            _ = await legacy.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy(), SynchronizationMode.NoDataLoss);
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.SourceColumnRemoved && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", table, TestCancellationToken, replaceExisting: false, retainDeletedRows: true, mode: SynchronizationMode.NoDataLoss))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "New row", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+        var relaxed = await schema.ReadTableAsync(table, TestCancellationToken);
+        Assert.True(relaxed!.Columns.Single(column => column.Name == "legacy").IsNullable);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

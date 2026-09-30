@@ -216,6 +216,7 @@ public static class SchemaPlanner
                 $"Source column '{destinationColumn.Name}' is no longer supported for replication; retain the destination column without further updates.",
                 false,
                 false));
+            AddRetainedColumnRelaxation(changes, destinationColumn);
         }
 
         foreach (var destinationColumn in destination.Columns.Where(column =>
@@ -232,6 +233,10 @@ public static class SchemaPlanner
                     : $"Source column '{destinationColumn.Name}' no longer exists; retain it in the destination.",
                 drop,
                 false));
+            if (!drop)
+            {
+                AddRetainedColumnRelaxation(changes, destinationColumn);
+            }
         }
 
         return new SchemaPlan(changes);
@@ -302,6 +307,16 @@ public static class SchemaPlanner
                 || Value(source.Scale) < Value(destination.Scale),
             _ => false
         };
+    }
+
+    // A retained column no longer receives values, so new rows would violate a NOT NULL constraint
+    // created before destination columns were made nullable.
+    private static void AddRetainedColumnRelaxation(List<SchemaChange> changes, DestinationColumn destinationColumn)
+    {
+        if (!destinationColumn.IsNullable && !IsManagedName(destinationColumn.Name))
+        {
+            changes.Add(RelaxNullability(destinationColumn.Name));
+        }
     }
 
     // Destination columns other than the primary key accept nulls so that required-level

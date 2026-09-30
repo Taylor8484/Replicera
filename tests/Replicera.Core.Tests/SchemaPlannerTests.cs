@@ -524,6 +524,58 @@ public sealed class SchemaPlannerTests
         Assert.DoesNotContain(plan.Changes, change => change.Kind == SchemaChangeKind.DropColumn && change.ObjectName == "formerlysupported");
     }
 
+    [Theory]
+    [InlineData(SynchronizationMode.NoDataLoss, true)]
+    [InlineData(SynchronizationMode.Complete, false)]
+    public void Plan_RelaxesNotNullOnlyForRetainedColumns(SynchronizationMode mode, bool expectRelax)
+    {
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("name", SourceType.String, true, 100),
+                new("legacy", SourceType.String, false, 20),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true),
+                new(ManagedColumnNames.SourceRemoveDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy(), mode);
+
+        Assert.Equal(
+            expectRelax,
+            plan.Changes.Any(change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName == "legacy"));
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_RelaxesNotNullOnColumnThatBecameUnsupported()
+    {
+        var source = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "legacy", SourceType = SourceType.String, UnsupportedReason = "Not readable." }
+            ]);
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("legacy", SourceType.String, false, 20),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(source, destination, new SchemaPolicy());
+
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.UnsupportedColumnRetained && change.ObjectName == "legacy");
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName == "legacy");
+    }
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>

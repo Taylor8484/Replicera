@@ -492,6 +492,50 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable();
+        await new SqlServerMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
+        var schema = new SqlServerSchemaManager(database.ConnectionString);
+        await schema.ApplySchemaPlanAsync(
+            "integration",
+            table,
+            SchemaPlanner.Plan(table, null, new SchemaPolicy(), SynchronizationMode.NoDataLoss),
+            TestCancellationToken);
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var legacy = connection.CreateCommand();
+            legacy.CommandText = "ALTER TABLE [dbo].[account] ADD [legacy] nvarchar(20) NOT NULL CONSTRAINT [DF_account_legacy] DEFAULT N'x'; ALTER TABLE [dbo].[account] DROP CONSTRAINT [DF_account_legacy];";
+            _ = await legacy.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy(), SynchronizationMode.NoDataLoss);
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.SourceColumnRemoved && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", table, TestCancellationToken, replaceExisting: false, retainDeletedRows: true, mode: SynchronizationMode.NoDataLoss))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "New row", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+        var relaxed = await schema.ReadTableAsync(table, TestCancellationToken);
+        var legacyColumn = relaxed!.Columns.Single(column => column.Name == "legacy");
+        Assert.True(legacyColumn.IsNullable);
+        Assert.Equal(20, legacyColumn.MaxLength);
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();
