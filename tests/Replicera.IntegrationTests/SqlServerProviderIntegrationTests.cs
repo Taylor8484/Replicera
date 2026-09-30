@@ -876,7 +876,7 @@ public sealed class SqlServerProviderIntegrationTests
         await using var database = await TestDatabase.CreateAsync();
 
         var directory = Directory.CreateTempSubdirectory("replicera-status-");
-        var configPath = Path.Combine(directory.FullName, "replicera.json");
+        var configPath = Path.Join(directory.FullName, "replicera.json");
         var connectionVariable = $"REPLICERA_SQL_{Guid.NewGuid():N}";
         try
         {

@@ -2,6 +2,7 @@ using Replicera.Core.Abstractions;
 
 namespace Replicera.Provider.Oracle;
 
+/// <summary>Creates Oracle destination components.</summary>
 /// <param name="commandTimeout">
 /// The configured statement timeout for writing synchronized rows. When null,
 /// <see cref="Core.Configuration.DestinationConfiguration.DefaultCommandTimeout"/> applies.

@@ -581,7 +581,7 @@ public sealed class CliApplicationTests
     public async Task Cancellation_ReturnsSynchronizationFailureAndReportsCancellation()
     {
         var directory = Directory.CreateTempSubdirectory("replicera-test-");
-        var path = Path.Combine(directory.FullName, "replicera.json");
+        var path = Path.Join(directory.FullName, "replicera.json");
         try
         {
             Assert.Equal(0, await CliApplication.RunAsync(["init", "--config", path], TextWriter.Null, TextWriter.Null, CancellationToken.None));

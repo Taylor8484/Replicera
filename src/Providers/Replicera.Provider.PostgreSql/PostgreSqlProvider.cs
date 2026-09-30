@@ -4,6 +4,7 @@ using Replicera.Core.Configuration;
 
 namespace Replicera.Provider.PostgreSql;
 
+/// <summary>Creates PostgreSQL destination components.</summary>
 /// <param name="commandTimeout">
 /// The configured statement timeout. When null, a timeout already set in the connection string is
 /// kept, otherwise <see cref="DestinationConfiguration.DefaultCommandTimeout"/> applies.
