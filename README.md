@@ -20,15 +20,24 @@ For initial role provisioning, temporarily grant System Administrator and run `r
 ```sh
 dotnet restore Replicera.sln
 dotnet build Replicera.sln --no-restore
-dotnet test Replicera.sln --no-build
+dotnet test Replicera.sln --no-build --filter "Category!=Credentialed&Category!=DataverseSqlEndToEnd&Category!=DataverseOracleEndToEnd&Category!=Scale"
 dotnet run --project src/Replicera.Cli -- --help
 ```
+
+The filter excludes the suites that need a Dataverse environment or run the scale benchmark; run those through the scripts below. Database integration tests are reported as skipped unless their connection string is set.
 
 Published builds use the executable name `replicera`. Run `replicera --version` to report the version embedded by the release build.
 
 ## Release Packages
 
-Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, and third-party notices. Packages can also be built locally:
+Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, contribution and community documents, third-party notices, and the `third-party-licenses` directory, which includes the .NET runtime license and notices. No release has been published yet. To create one, confirm CI is green on `main`, then tag and push, starting with a pre-release:
+
+```sh
+git tag -a v0.1.0-rc.1 -m "Replicera 0.1.0 release candidate 1"
+git push origin v0.1.0-rc.1
+```
+
+Packages can also be built locally:
 
 ```sh
 python3 scripts/package_release.py --version 0.1.0 --runtime linux-x64
@@ -51,7 +60,7 @@ scripts/run-end-to-end-tests.sh
 
 The database scripts start and remove temporary SQL Server 2022 (CU27), PostgreSQL 17.11, and Oracle AI Database Free 26ai (23.26.3) containers. The image versions are pinned so results are reproducible; update them deliberately and rerun the suites. To use an existing non-production server, set the corresponding `REPLICERA_SQL_TEST_CONNECTION_STRING`, `REPLICERA_POSTGRES_TEST_CONNECTION_STRING`, or `REPLICERA_ORACLE_TEST_CONNECTION_STRING`. Without these variables the database tests are reported as skipped; the scripts set `REPLICERA_INTEGRATION_REQUIRED=1`, which makes a missing connection fail the run instead. The lock-loss integration tests terminate the lock's database session, so the test login needs permission to end other sessions in its test database: `sa`-equivalent rights on SQL Server, `pg_signal_backend` or superuser on PostgreSQL, and `ALTER SYSTEM` plus `SELECT` on `V$SESSION` for the Oracle test user. The Oracle tests also need `CREATE TRIGGER` to simulate a failure after `CREATE TABLE`. `scripts/run-oracle-integration-tests.sh` grants all of these to its test user. Grant these only in disposable test environments. The scale script streams a logical 512 MiB dataset with a 256 MiB managed-heap limit and enforces a 5,000-record/s baseline. The Dataverse and end-to-end scripts load `.env.local` by default, or the file named by `REPLICERA_ENV_FILE`. The SQL Server and Oracle end-to-end scripts create and clean up a Dataverse account while verifying initial, update, and delete replication. Never use a production Dataverse environment.
 
-Configuration files contain environment-variable names rather than secret values. Client-secret authentication reads the secret directly from the configured variable. Certificate authentication reads a base64-encoded PKCS#12 document and, when needed, its password from a second environment variable.
+Configuration files contain environment-variable names rather than secret values. Each destination can also set `commandTimeout` to limit how long a single database statement may run (ten minutes by default); see the operations guide. Client-secret authentication reads the secret directly from the configured variable. Certificate authentication reads a base64-encoded PKCS#12 document and, when needed, its password from a second environment variable.
 
 Copy the matching file from `examples/` to `replicera.local.json`, replace the non-secret identifiers and URL, and set the named environment variables. Inspect before synchronizing:
 
@@ -86,10 +95,10 @@ Jobs support three synchronization modes: `complete` (the default) mirrors sourc
 Declare known Dataverse column renames under `schema.columnRenames.<table>` to preserve destination values. Destructive drops are dependency-checked and never cascade. A source table is dropped only after a direct Dataverse metadata request confirms that it no longer exists.
 Reload mode is intentionally destructive and is intended for development or small tables: a failed load leaves the recreated table available for a rerun but does not restore its previous physical contents.
 Use `sync --full --table <name>` to force a full source read. In `complete` mode it performs a controlled replacement; in `noDataLoss` mode it performs a non-destructive full merge. The existing destination data and checkpoint remain recoverable if the transaction fails.
-Use `--json` with `inspect`, `sync`, or `status` for machine-readable results. `sync --verbose` writes replication progress to standard error; `sync --log-json` writes the same diagnostics as JSON Lines for central logging.
-`status` reports each table's state, last successful sync, latest run type/time, row counts, and sanitized failure details.
+Use `--json` with `inspect`, `sync`, `status`, `schedule show`, or `source bootstrap-permissions` for machine-readable results. `sync --verbose` writes replication progress to standard error; `--log-json` on `sync` or `worker` writes the same diagnostics as JSON Lines for central logging.
+`status` reports each table's state, last successful sync, latest run type/time, row counts, and sanitized failure details. It only reads and never creates or upgrades Replicera's destination metadata.
 
-For portable automatic synchronization, configure an interval with `schedule set` and leave `replicera worker --job <job>` running. The worker runs one job at a time, waits for the configured interval after each completed attempt, and continues after failed attempts. Press Ctrl+C for a graceful stop. The existing `sync` command remains available for manual runs whether the schedule is enabled or disabled. See the operations guide for the full worker lifecycle and limitations. Multi-job hosting, calendar schedules, containers, and native services are tracked in the [scheduling roadmap](docs/scheduling-roadmap.md).
+For portable automatic synchronization, configure an interval with `schedule set` and leave `replicera worker --job <job>` running. The worker runs one job at a time, waits for the configured interval after each completed attempt, and continues after failed attempts, backing off after consecutive failures. It reloads the configuration before every cycle. Press Ctrl+C, or send SIGTERM, for a graceful stop. The existing `sync` command remains available for manual runs whether the schedule is enabled or disabled. See the operations guide for the full worker lifecycle and limitations. Multi-job hosting, calendar schedules, containers, and native services are tracked in the [scheduling roadmap](docs/scheduling-roadmap.md).
 
 See `THIRD-PARTY-NOTICES.md` before distributing binaries.
 See [`docs/operations.md`](docs/operations.md) for privileges, deployment, recovery, resynchronization, and troubleshooting.
@@ -103,4 +112,4 @@ The Community edition is intended to remain a complete, useful replication produ
 
 ## Status
 
-Replicera is under active v0.1 development. Public commands and configuration formats may change until v0.1.
+Replicera is under active v0.1 development and has no published release yet. Public commands and configuration formats may change until v0.1.
