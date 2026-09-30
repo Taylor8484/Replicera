@@ -71,7 +71,8 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
                     _ => maxLength
                 },
                 reader.GetByte(3),
-                reader.GetByte(4)));
+                reader.GetByte(4),
+                type == SourceType.DateTime ? StoredDateTimeBehavior(sqlType) : null));
         }
 
         return columns.Count == 0
@@ -449,6 +450,11 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
 
         return FormatDeclaration(reader.GetString(0), reader.GetInt16(1), reader.GetByte(2), reader.GetByte(3));
     }
+
+    // datetime2 stores user-local (UTC) and time-zone-independent values alike, so only a date
+    // column identifies a specific behavior.
+    private static DateTimeBehavior? StoredDateTimeBehavior(string sqlType) =>
+        sqlType == "date" ? DateTimeBehavior.DateOnly : null;
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

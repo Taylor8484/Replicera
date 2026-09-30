@@ -45,7 +45,8 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
                 string.Equals(reader.GetString(5), "Y", StringComparison.Ordinal),
                 reader.IsDBNull(2) || sqlType is "NCLOB" or "CLOB" ? null : Convert.ToInt32(reader.GetDecimal(2), System.Globalization.CultureInfo.InvariantCulture),
                 reader.IsDBNull(3) ? null : Convert.ToInt32(reader.GetDecimal(3), System.Globalization.CultureInfo.InvariantCulture),
-                reader.IsDBNull(4) ? null : Convert.ToInt32(reader.GetDecimal(4), System.Globalization.CultureInfo.InvariantCulture)));
+                reader.IsDBNull(4) ? null : Convert.ToInt32(reader.GetDecimal(4), System.Globalization.CultureInfo.InvariantCulture),
+                type == SourceType.DateTime ? StoredDateTimeBehavior(sqlType) : null));
         }
 
         return columns.Count == 0 ? null : new DestinationTable(schema, tableName, columns, managed);
@@ -467,6 +468,14 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
 
     private static ColumnDefinition FindColumn(TableDefinition table, string logicalName) =>
         table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
+
+    private static DateTimeBehavior? StoredDateTimeBehavior(string sqlType) => sqlType switch
+    {
+        "DATE" => DateTimeBehavior.DateOnly,
+        _ when sqlType.StartsWith("TIMESTAMP", StringComparison.Ordinal) && sqlType.EndsWith("WITH TIME ZONE", StringComparison.Ordinal) => DateTimeBehavior.UserLocal,
+        _ when sqlType.StartsWith("TIMESTAMP", StringComparison.Ordinal) && !sqlType.Contains("TIME ZONE", StringComparison.Ordinal) => DateTimeBehavior.TimeZoneIndependent,
+        _ => null
+    };
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

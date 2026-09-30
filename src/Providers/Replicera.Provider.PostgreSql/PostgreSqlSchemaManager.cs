@@ -52,7 +52,8 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
                 reader.GetBoolean(5),
                 reader.IsDBNull(2) ? null : reader.GetInt32(2),
                 reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                reader.IsDBNull(4) ? null : reader.GetInt32(4)));
+                reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                type == SourceType.DateTime ? StoredDateTimeBehavior(sqlType) : null));
         }
 
         return columns.Count == 0
@@ -357,6 +358,14 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
 
     internal static string BuildRelaxNullability(TableDefinition table, string columnName) =>
         $"ALTER TABLE {PostgreSqlIdentifier.Qualified("public", table.DestinationName)} ALTER COLUMN {PostgreSqlIdentifier.Quote(PostgreSqlIdentifier.Normalize(columnName))} DROP NOT NULL;";
+
+    private static DateTimeBehavior? StoredDateTimeBehavior(string sqlType) => sqlType switch
+    {
+        "date" => DateTimeBehavior.DateOnly,
+        "timestamp without time zone" => DateTimeBehavior.TimeZoneIndependent,
+        "timestamp with time zone" => DateTimeBehavior.UserLocal,
+        _ => null
+    };
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

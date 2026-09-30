@@ -159,6 +159,12 @@ public static class SchemaPlanner
                 continue;
             }
 
+            if (!sourceColumn.IsPrimaryKey && StoresDifferentDateTimeBehavior(sourceColumn, destinationColumn))
+            {
+                changes.Add(ReplaceColumn(sourceColumn.LogicalName, "its date and time behavior changed", mode, destinationColumns, now));
+                continue;
+            }
+
             if (RequiresExpansion(sourceColumn, destinationColumn))
             {
                 changes.Add(new SchemaChange(
@@ -335,6 +341,21 @@ public static class SchemaPlanner
                     >= (source.MaxIntegerDigits ?? IntegerDigits(source.Precision, source.Scale)),
             _ => false
         };
+    }
+
+    // Providers report the behavior a destination date/time column stores, or null when its type
+    // stores both user-local and time-zone-independent values. A date-only source needs a date
+    // column; other behaviors need a column that is not dedicated to a different behavior.
+    private static bool StoresDifferentDateTimeBehavior(ColumnDefinition source, DestinationColumn destination)
+    {
+        if (source.SourceType != SourceType.DateTime || source.DateTimeBehavior is not { } sourceBehavior)
+        {
+            return false;
+        }
+
+        return sourceBehavior == DateTimeBehavior.DateOnly
+            ? destination.DateTimeBehavior != DateTimeBehavior.DateOnly
+            : destination.DateTimeBehavior is { } destinationBehavior && destinationBehavior != sourceBehavior;
     }
 
     // Dataverse cannot change a column's type in place, so a different type means the column was

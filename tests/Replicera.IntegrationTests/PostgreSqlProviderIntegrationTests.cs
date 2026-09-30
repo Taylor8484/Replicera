@@ -475,6 +475,40 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition EventTable(DateTimeBehavior userLocal, DateTimeBehavior independent) => new TableDefinition(
+            "event",
+            "events",
+            "event",
+            [
+                new ColumnDefinition { LogicalName = "eventid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "userlocal", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = userLocal },
+                new ColumnDefinition { LogicalName = "independent", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = independent },
+                new ColumnDefinition { LogicalName = "dayonly", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = DateTimeBehavior.DateOnly }
+            ]);
+        await PrepareTableAsync(database.ConnectionString, EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent));
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var unchanged = EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent);
+        Assert.Empty(SchemaPlanner.Plan(unchanged, await schema.ReadTableAsync(unchanged, TestCancellationToken), new SchemaPolicy()).Changes);
+
+        var changed = EventTable(DateTimeBehavior.DateOnly, DateTimeBehavior.UserLocal);
+        var plan = SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(
+            ["independent", "userlocal"],
+            plan.Changes.Where(change => change.Kind == SchemaChangeKind.ReplaceColumn).Select(change => change.ObjectName).Order(StringComparer.Ordinal));
+        await schema.ApplySchemaPlanAsync("integration", changed, plan, TestCancellationToken);
+        Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy()).Changes);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

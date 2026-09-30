@@ -651,6 +651,45 @@ public sealed class SchemaPlannerTests
         Assert.True(plan.HasBlockingChanges);
     }
 
+    [Theory]
+    [InlineData(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent, true)]
+    [InlineData(DateTimeBehavior.TimeZoneIndependent, DateTimeBehavior.UserLocal, true)]
+    [InlineData(DateTimeBehavior.DateOnly, DateTimeBehavior.UserLocal, true)]
+    [InlineData(DateTimeBehavior.DateOnly, null, true)]
+    [InlineData(DateTimeBehavior.UserLocal, DateTimeBehavior.DateOnly, true)]
+    [InlineData(DateTimeBehavior.UserLocal, null, false)]
+    [InlineData(DateTimeBehavior.TimeZoneIndependent, null, false)]
+    [InlineData(DateTimeBehavior.DateOnly, DateTimeBehavior.DateOnly, false)]
+    [InlineData(DateTimeBehavior.UserLocal, DateTimeBehavior.UserLocal, false)]
+    public void Plan_ReplacesDateTimeColumnWhenStoredBehaviorNoLongerMatches(
+        DateTimeBehavior sourceBehavior,
+        DateTimeBehavior? destinationBehavior,
+        bool expectReplacement)
+    {
+        var source = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "occurred", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = sourceBehavior }
+            ]);
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("occurred", SourceType.DateTime, true, DateTimeBehavior: destinationBehavior),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(source, destination, new SchemaPolicy(), SynchronizationMode.Complete, PlanTime);
+
+        Assert.Equal(expectReplacement, plan.Changes.Any(change => change.Kind == SchemaChangeKind.ReplaceColumn && change.ObjectName == "occurred"));
+        Assert.False(plan.HasBlockingChanges);
+    }
+
     private static DestinationTable TypeChangedDestination() => new(
         "dbo",
         "account",
