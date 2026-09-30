@@ -63,7 +63,9 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
         if (assignSystemCustomizer)
         {
             var customizer = await FindRoleByTemplateAsync(SystemCustomizerRoleTemplateId, who.BusinessUnitId, cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("The System Customizer role was not found in the application user's business unit.");
+                ?? throw new RepliceraException(
+                    ErrorCategory.UnsupportedMetadata,
+                    "The System Customizer role was not found in the application user's business unit.");
             customizerAssigned = await IsAssignedAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
             if (!customizerAssigned)
             {
@@ -98,7 +100,9 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             .OrderBy(privilege => privilege.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         return reads.Length == 0
-            ? throw new InvalidOperationException("Dataverse returned no organization-level table Read privileges; the reader role was not changed.")
+            ? throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                "Dataverse returned no organization-level table Read privileges; the reader role was not changed.")
             : reads;
     }
 

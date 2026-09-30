@@ -208,6 +208,48 @@ public sealed class DataversePermissionBootstrapperTests
     }
 
     [Fact]
+    public async Task ApplyAsync_WhenSystemCustomizerIsMissing_ReportsMetadataError()
+    {
+        var businessUnitId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", businessUnitId)),
+            Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(Guid.NewGuid()))),
+            BusinessUnits(businessUnitId),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", roleId)]))),
+            Response<RetrieveRolePrivilegesRoleResponse>(("RolePrivileges", Array.Empty<RolePrivilege>())),
+            new ReplacePrivilegesRoleResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", roleId)]))),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: true,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, error.Category);
+        Assert.Contains("System Customizer", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WhenNoReadPrivilegesExist_ReportsMetadataErrorBeforeChangingRole()
+    {
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", Guid.NewGuid())),
+            Response<RetrieveAllEntitiesResponse>(("EntityMetadata", Array.Empty<EntityMetadata>())));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.AllTables,
+            assignSystemCustomizer: true,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, error.Category);
+        Assert.Equal(2, service.Requests.Count);
+    }
+
+    [Fact]
     public async Task ApplyAsync_WithUnknownTable_FailsBeforeChangingRole()
     {
         var service = new QueueService(
