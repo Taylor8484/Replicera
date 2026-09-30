@@ -71,6 +71,43 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_StagesOnlyTheLastChangeForRecordsRepeatedInAPage()
+    {
+        var repeated = Guid.NewGuid();
+        var other = Guid.NewGuid();
+        var page = new SourcePage(
+        [
+            new SourceRecord(repeated, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "first" }),
+            new SourceRecord(other, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "other" }),
+            new SourceRecord(repeated, ChangeKind.Delete, new Dictionary<string, object?>()),
+            new SourceRecord(repeated, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "recreated" })
+        ],
+            null,
+            "token",
+            false);
+        var session = new FakeSession();
+        var engine = new ReplicationEngine(new FakeSource([page]), new FakeDestination(session), new FakeStateStore(null));
+
+        var metrics = await engine.SyncAsync("job", Table(), 100, CancellationToken.None);
+
+        var applied = Assert.Single(session.AppliedPages);
+        Assert.Equal([other, repeated], applied.Records.Select(record => record.Id));
+        var final = applied.Records[1];
+        Assert.Equal(ChangeKind.Upsert, final.Kind);
+        Assert.Equal("recreated", final.Values["name"]);
+        Assert.Equal(4, metrics.RecordsReceived);
+        Assert.Equal("token", session.CommittedCheckpoint);
+    }
+
+    [Fact]
+    public void Deduplicate_ReturnsPageUnchangedWhenRecordsAreUnique()
+    {
+        var page = Page(3, false, "token");
+
+        Assert.Same(page, ReplicationEngine.Deduplicate(page));
+    }
+
+    [Fact]
     public async Task SyncAsync_MarksExpiredCheckpointForResync()
     {
         var state = new FakeStateStore(
@@ -412,12 +449,16 @@ public sealed class ReplicationEngineTests
 
         public bool Disposed { get; private set; }
 
+        public List<SourcePage> AppliedPages { get; } = [];
+
         public Task<PageApplyResult> ApplyPageAsync(SourcePage page, CancellationToken cancellationToken)
         {
             if (ApplyException is not null)
             {
                 throw ApplyException;
             }
+
+            AppliedPages.Add(page);
 
             var deleted = page.Records.Count(record => record.Kind == ChangeKind.Delete);
             return Task.FromResult(new PageApplyResult(page.Records.Count - deleted, 0, deleted));

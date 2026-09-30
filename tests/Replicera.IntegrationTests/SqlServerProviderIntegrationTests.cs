@@ -899,6 +899,46 @@ public sealed class SqlServerProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task RecordRepeatedWithinPage_IsAppliedOnceWithItsLastChange()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var repeated = Guid.NewGuid();
+        var removed = Guid.NewGuid();
+        var page = new SourcePage(
+            [
+                Upsert(repeated, "First", 1),
+                Upsert(removed, "Removed", 1),
+                Upsert(repeated, "Last", 2),
+                Delete(removed)
+            ],
+            null,
+            "repeated-checkpoint",
+            false);
+        var engine = new ReplicationEngine(
+            new PageSource([page]),
+            new SqlServerDestinationWriter(database.ConnectionString),
+            new SqlServerReplicationStateStore(database.ConnectionString));
+
+        var metrics = await engine.SyncAsync("integration", table, 100, TestCancellationToken);
+
+        Assert.Equal(4, metrics.RecordsReceived);
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT [accountid], [name], [statuscode] FROM [dbo].[account];";
+        await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal(repeated, reader.GetGuid(0));
+        Assert.Equal("Last", reader.GetString(1));
+        Assert.Equal(2, reader.GetInt32(2));
+        Assert.False(await reader.ReadAsync(TestCancellationToken));
+    }
+
+    [SkippableFact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task MultiPageSync_LoadsEveryPageAndCommitsTerminalCheckpoint()
     {
         await using var database = await TestDatabase.CreateAsync();

@@ -92,7 +92,7 @@ public sealed partial class ReplicationEngine
                         "The source returned records after its terminal checkpoint.");
                 }
 
-                var applied = await session.ApplyPageAsync(page, cancellationToken).ConfigureAwait(false);
+                var applied = await session.ApplyPageAsync(Deduplicate(page), cancellationToken).ConfigureAwait(false);
                 pages++;
                 received += page.Records.Count;
                 inserted += applied.Inserted;
@@ -190,6 +190,29 @@ public sealed partial class ReplicationEngine
                 "Synchronization failed before the checkpoint could be committed.",
                 exception);
         }
+    }
+
+    /// <summary>
+    /// Keeps only the last change for each record in a page, so a record updated or deleted and
+    /// re-created within one page is staged once with its final state.
+    /// </summary>
+    internal static SourcePage Deduplicate(SourcePage page)
+    {
+        var lastIndex = new Dictionary<Guid, int>(page.Records.Count);
+        for (var index = 0; index < page.Records.Count; index++)
+        {
+            lastIndex[page.Records[index].Id] = index;
+        }
+
+        if (lastIndex.Count == page.Records.Count)
+        {
+            return page;
+        }
+
+        var records = page.Records
+            .Where((record, index) => lastIndex[record.Id] == index)
+            .ToArray();
+        return page with { Records = records };
     }
 
     private static string FailureMessage(RepliceraException exception) => exception.Category switch
