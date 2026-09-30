@@ -52,7 +52,8 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
                 reader.GetBoolean(5),
                 reader.IsDBNull(2) ? null : reader.GetInt32(2),
                 reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                reader.IsDBNull(4) ? null : reader.GetInt32(4)));
+                reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                type == SourceType.DateTime ? StoredDateTimeBehavior(sqlType) : null));
         }
 
         return columns.Count == 0
@@ -90,6 +91,7 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
                 SchemaChangeKind.DropColumn => BuildDropColumn(source, change.ObjectName),
                 SchemaChangeKind.ExpandColumn => BuildAlterColumn(source, change.ObjectName),
                 SchemaChangeKind.RelaxColumnNullability => BuildRelaxNullability(source, change.ObjectName),
+                SchemaChangeKind.ReplaceColumn => BuildReplaceColumn(source, change.ObjectName, change.NewObjectName),
                 _ => null
             };
             if (sql is not null)
@@ -100,7 +102,7 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
 
         var tableId = await EnsureOwnershipAsync(connection, transaction, jobName, source, cancellationToken).ConfigureAwait(false);
         if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable or SchemaChangeKind.ReplaceColumn))
         {
             await using var reset = new NpgsqlCommand(
                 "UPDATE replicera.tables SET change_checkpoint = NULL, status = 'ResyncRequired' WHERE table_id = @table_id AND change_checkpoint IS NOT NULL;",
@@ -180,7 +182,7 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, null, cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (var change in plan.Changes.Where(change => change.IsAutomatic && change.Kind == SchemaChangeKind.DropColumn))
+        foreach (var change in plan.Changes.Where(change => change.IsAutomatic && change.Kind is SchemaChangeKind.DropColumn or SchemaChangeKind.ReplaceColumn))
         {
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, change.ObjectName, cancellationToken).ConfigureAwait(false);
         }
@@ -316,6 +318,19 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
         return sql;
     }
 
+    // The old column is dropped, or renamed when its values must be preserved, before the new
+    // column is added under the original name.
+    internal static string BuildReplaceColumn(TableDefinition table, string logicalName, string? preservedName)
+    {
+        var column = table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
+        var tableName = PostgreSqlIdentifier.Qualified("public", table.DestinationName);
+        var columnName = PostgreSqlIdentifier.Quote(PostgreSqlIdentifier.Normalize(column.LogicalName));
+        var retire = preservedName is null
+            ? $"ALTER TABLE {tableName} DROP COLUMN {columnName};"
+            : BuildRenameColumn(table, column.LogicalName, preservedName);
+        return $"{retire}{Environment.NewLine}ALTER TABLE {tableName} ADD COLUMN {columnName} {PostgreSqlTypeMapper.Map(column).Declaration} NULL;";
+    }
+
     private static string BuildAddManagedColumn(TableDefinition table, string columnName) =>
         $"ALTER TABLE {PostgreSqlIdentifier.Qualified("public", table.DestinationName)} ADD COLUMN {PostgreSqlIdentifier.Quote(PostgreSqlIdentifier.Normalize(columnName))} timestamp with time zone NULL;";
 
@@ -343,6 +358,14 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
 
     internal static string BuildRelaxNullability(TableDefinition table, string columnName) =>
         $"ALTER TABLE {PostgreSqlIdentifier.Qualified("public", table.DestinationName)} ALTER COLUMN {PostgreSqlIdentifier.Quote(PostgreSqlIdentifier.Normalize(columnName))} DROP NOT NULL;";
+
+    private static DateTimeBehavior? StoredDateTimeBehavior(string sqlType) => sqlType switch
+    {
+        "date" => DateTimeBehavior.DateOnly,
+        "timestamp without time zone" => DateTimeBehavior.TimeZoneIndependent,
+        "timestamp with time zone" => DateTimeBehavior.UserLocal,
+        _ => null
+    };
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

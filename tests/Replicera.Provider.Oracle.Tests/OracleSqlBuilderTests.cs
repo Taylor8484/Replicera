@@ -111,6 +111,17 @@ public sealed class OracleSqlBuilderTests
         Assert.Equal("UPDATE \"ACCOUNT\" SET \"AMOUNT_REPLICERA_COPY\" = \"AMOUNT\"", statements[2]);
     }
 
+    [Fact]
+    public void BuildReplaceColumn_DropsOrRenamesThenAddsColumn()
+    {
+        Assert.Equal(
+            ["ALTER TABLE \"ACCOUNT\" DROP COLUMN \"NAME\"", "ALTER TABLE \"ACCOUNT\" ADD (\"NAME\" NVARCHAR2(100) NULL)"],
+            OracleSchemaManager.BuildReplaceColumn(TextTable(100), "name", null));
+        Assert.Equal(
+            "ALTER TABLE \"ACCOUNT\" RENAME COLUMN \"NAME\" TO \"NAME_REPLACED_20260930\"",
+            OracleSchemaManager.BuildReplaceColumn(TextTable(100), "name", "name_replaced_20260930")[0]);
+    }
+
     private static TableDefinition TextTable(int maxLength) => new(
         "account",
         "accounts",

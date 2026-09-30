@@ -483,6 +483,150 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var destinationName = $"account_{suffix}";
+        await PrepareTableAsync(connectionString, job, AccountsTable(destinationName, nameLength: 200));
+        var schema = new OracleSchemaManager(connectionString);
+        var writer = new OracleDestinationWriter(connectionString);
+        var narrowed = AccountsTable(destinationName, nameLength: 100);
+        var plan = SchemaPlanner.Plan(narrowed, await schema.ReadTableAsync(narrowed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync(job, narrowed, plan, TestCancellationToken);
+        await using (var session = await writer.BeginInitialSyncAsync(job, narrowed, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Short", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var destination = await schema.ReadTableAsync(narrowed, TestCancellationToken);
+        Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
+    }
+
+    [Theory]
+    [Trait("Category", "OracleIntegration")]
+    [InlineData(SynchronizationMode.Complete)]
+    [InlineData(SynchronizationMode.NoDataLoss)]
+    public async Task ColumnWithChangedType_IsReplacedAccordingToMode(SynchronizationMode mode)
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var destinationName = $"account_{suffix}";
+        TableDefinition CodeTable(bool numeric) => new TableDefinition(
+            "account",
+            "accounts",
+            destinationName,
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = 100 },
+                numeric
+                    ? new ColumnDefinition { LogicalName = "code", SourceType = SourceType.Int32, IsNullable = true }
+                    : new ColumnDefinition { LogicalName = "code", SourceType = SourceType.String, IsNullable = true, MaxLength = 20 }
+            ]);
+        await PrepareTableAsync(connectionString, job, CodeTable(false), mode);
+        var schema = new OracleSchemaManager(connectionString);
+        var writer = new OracleDestinationWriter(connectionString);
+        var stateStore = new OracleReplicationStateStore(connectionString);
+        var noDataLoss = mode == SynchronizationMode.NoDataLoss;
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync(
+            job, CodeTable(false), TestCancellationToken, replaceExisting: !noDataLoss, retainDeletedRows: noDataLoss, mode: mode))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage([new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Row", ["code"] = "A-1" })], null, null, false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var replaced = CodeTable(true);
+        var plan = SchemaPlanner.Plan(
+            replaced,
+            await schema.ReadTableAsync(replaced, TestCancellationToken),
+            new SchemaPolicy(),
+            mode,
+            new DateTimeOffset(2026, 9, 30, 0, 0, 0, TimeSpan.Zero));
+        var replacement = Assert.Single(plan.Changes, change => change.Kind == SchemaChangeKind.ReplaceColumn);
+        Assert.Equal(noDataLoss ? "code_replaced_20260930" : null, replacement.NewObjectName);
+        await schema.ApplySchemaPlanAsync(job, replaced, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync(job, "account", TestCancellationToken);
+        Assert.Null(state!.DataCheckpoint);
+        var destination = await schema.ReadTableAsync(replaced, TestCancellationToken);
+        Assert.Equal(SourceType.Int32, destination!.Columns.Single(column => string.Equals(column.Name, "code", StringComparison.OrdinalIgnoreCase)).SourceType);
+        Assert.Equal(noDataLoss, destination.Columns.Any(column => string.Equals(column.Name, "code_replaced_20260930", StringComparison.OrdinalIgnoreCase)));
+
+        await using (var session = await writer.BeginInitialSyncAsync(
+            job, replaced, TestCancellationToken, replaceExisting: !noDataLoss, retainDeletedRows: noDataLoss, mode: mode))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage([new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Row", ["code"] = 42 })], null, null, false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-2", new(1, 1, 0, 1, 0), TestCancellationToken);
+        }
+
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        var tableName = OracleIdentifier.Quote(OracleIdentifier.Normalize(destinationName));
+        command.CommandText = noDataLoss
+            ? $"SELECT CODE || '|' || CODE_REPLACED_20260930 FROM {tableName}"
+            : $"SELECT CODE || '|' FROM {tableName}";
+        Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
+    public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var destinationName = $"event_{suffix}";
+        TableDefinition EventTable(DateTimeBehavior userLocal, DateTimeBehavior independent) => new TableDefinition(
+            "event",
+            "events",
+            destinationName,
+            [
+                new ColumnDefinition { LogicalName = "eventid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "userlocal", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = userLocal },
+                new ColumnDefinition { LogicalName = "independent", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = independent },
+                new ColumnDefinition { LogicalName = "dayonly", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = DateTimeBehavior.DateOnly }
+            ]);
+        await PrepareTableAsync(connectionString, job, EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent));
+        var schema = new OracleSchemaManager(connectionString);
+        var unchanged = EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent);
+        Assert.Empty(SchemaPlanner.Plan(unchanged, await schema.ReadTableAsync(unchanged, TestCancellationToken), new SchemaPolicy()).Changes);
+
+        var changed = EventTable(DateTimeBehavior.DateOnly, DateTimeBehavior.UserLocal);
+        var plan = SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(
+            ["independent", "userlocal"],
+            plan.Changes.Where(change => change.Kind == SchemaChangeKind.ReplaceColumn).Select(change => change.ObjectName).Order(StringComparer.Ordinal));
+        await schema.ApplySchemaPlanAsync(job, changed, plan, TestCancellationToken);
+        Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy()).Changes);
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

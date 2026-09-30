@@ -71,7 +71,8 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
                     _ => maxLength
                 },
                 reader.GetByte(3),
-                reader.GetByte(4)));
+                reader.GetByte(4),
+                type == SourceType.DateTime ? StoredDateTimeBehavior(sqlType) : null));
         }
 
         return columns.Count == 0
@@ -114,17 +115,18 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
                 SchemaChangeKind.RelaxColumnNullability => BuildRelaxNullability(source, change.ObjectName, existingDeclaration),
                 _ => null
             };
-            if (sql is null)
+            IReadOnlyList<string> statements = change.Kind == SchemaChangeKind.ReplaceColumn
+                ? BuildReplaceColumn(source, change.ObjectName, change.NewObjectName)
+                : sql is null ? [] : [sql];
+            foreach (var statement in statements)
             {
-                continue;
-            }
-
-            await using var command = connection.CreateCommand();
-            command.Transaction = transaction;
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
 #pragma warning disable CA2100 // SQL is generated from normalized and quoted provider-owned identifiers.
-            command.CommandText = sql;
+                command.CommandText = statement;
 #pragma warning restore CA2100
-            _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
 
         var tableId = await EnsureOwnershipAsync(
@@ -134,7 +136,7 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
             source,
             cancellationToken).ConfigureAwait(false);
         if (plan.Changes.Any(change => change.IsAutomatic && change.Kind is
-                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable))
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable or SchemaChangeKind.ReplaceColumn))
         {
             await using var reset = connection.CreateCommand();
             reset.Transaction = transaction;
@@ -221,7 +223,7 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, null, cancellationToken).ConfigureAwait(false);
         }
 
-        foreach (var change in plan.Changes.Where(change => change.IsAutomatic && change.Kind == SchemaChangeKind.DropColumn))
+        foreach (var change in plan.Changes.Where(change => change.IsAutomatic && change.Kind is SchemaChangeKind.DropColumn or SchemaChangeKind.ReplaceColumn))
         {
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, change.ObjectName, cancellationToken).ConfigureAwait(false);
         }
@@ -349,6 +351,23 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
         return sql;
     }
 
+    // The old column is dropped, or renamed when its values must be preserved, before the new
+    // column is added under the original name. The statements run separately so that the add is
+    // compiled after the name has been released.
+    internal static List<string> BuildReplaceColumn(TableDefinition table, string logicalName, string? preservedName)
+    {
+        var column = table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
+        var tableName = $"[dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))}";
+        var columnName = SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(column.LogicalName));
+        return
+        [
+            preservedName is null
+                ? $"ALTER TABLE {tableName} DROP COLUMN {columnName};"
+                : BuildRenameColumn(table, column.LogicalName, preservedName),
+            $"ALTER TABLE {tableName} ADD {columnName} {SqlServerTypeMapper.Map(column).Declaration} NULL;"
+        ];
+    }
+
     private static string BuildAddManagedColumn(TableDefinition table, string columnName) =>
         $"ALTER TABLE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} ADD {SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(columnName))} datetimeoffset(7) NULL;";
 
@@ -431,6 +450,11 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
 
         return FormatDeclaration(reader.GetString(0), reader.GetInt16(1), reader.GetByte(2), reader.GetByte(3));
     }
+
+    // datetime2 stores user-local (UTC) and time-zone-independent values alike, so only a date
+    // column identifies a specific behavior.
+    private static DateTimeBehavior? StoredDateTimeBehavior(string sqlType) =>
+        sqlType == "date" ? DateTimeBehavior.DateOnly : null;
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

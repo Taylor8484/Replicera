@@ -9,7 +9,8 @@ public static class SchemaPlanner
         TableDefinition source,
         DestinationTable? destination,
         SchemaPolicy policy,
-        SynchronizationMode mode = SynchronizationMode.Complete)
+        SynchronizationMode mode = SynchronizationMode.Complete,
+        DateTimeOffset? now = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(policy);
@@ -152,7 +153,15 @@ public static class SchemaPlanner
 
             if (sourceColumn.SourceType != destinationColumn.SourceType)
             {
-                changes.Add(Incompatible(sourceColumn.LogicalName, "Source and destination types differ."));
+                changes.Add(sourceColumn.IsPrimaryKey
+                    ? Incompatible(sourceColumn.LogicalName, "The primary key type changed in the source.")
+                    : ReplaceColumn(sourceColumn.LogicalName, "its source type changed", mode, destinationColumns, now));
+                continue;
+            }
+
+            if (!sourceColumn.IsPrimaryKey && StoresDifferentDateTimeBehavior(sourceColumn, destinationColumn))
+            {
+                changes.Add(ReplaceColumn(sourceColumn.LogicalName, "its date and time behavior changed", mode, destinationColumns, now));
                 continue;
             }
 
@@ -165,10 +174,20 @@ public static class SchemaPlanner
                     policy.ExpandCompatibleColumns == SchemaAction.Automatic,
                     policy.ExpandCompatibleColumns != SchemaAction.Automatic));
             }
-            else if (IsNarrowingOrIncompatible(sourceColumn, destinationColumn))
+            else if (IsNarrowing(sourceColumn, destinationColumn))
             {
-                changes.Add(Incompatible(sourceColumn.LogicalName, "The source change is narrowing or incompatible."));
-                continue;
+                if (!DestinationHoldsSource(sourceColumn, destinationColumn))
+                {
+                    changes.Add(Incompatible(sourceColumn.LogicalName, "The source change is narrowing or incompatible."));
+                    continue;
+                }
+
+                changes.Add(new SchemaChange(
+                    SchemaChangeKind.NarrowerSourceColumn,
+                    sourceColumn.LogicalName,
+                    $"Source column '{sourceColumn.LogicalName}' is narrower than its destination column; retain the wider destination column.",
+                    false,
+                    false));
             }
 
             if (!sourceColumn.IsPrimaryKey && !destinationColumn.IsNullable)
@@ -296,7 +315,7 @@ public static class SchemaPlanner
         return IntegerDigits(source.Precision, source.Scale) >= requiredIntegerDigits;
     }
 
-    private static bool IsNarrowingOrIncompatible(ColumnDefinition source, DestinationColumn destination)
+    private static bool IsNarrowing(ColumnDefinition source, DestinationColumn destination)
     {
         return source.SourceType switch
         {
@@ -307,6 +326,71 @@ public static class SchemaPlanner
                 || Value(source.Scale) < Value(destination.Scale),
             _ => false
         };
+    }
+
+    // A narrower source is harmless when the existing destination column still holds every value
+    // the source can produce; the wider column is kept rather than shrunk.
+    private static bool DestinationHoldsSource(ColumnDefinition source, DestinationColumn destination)
+    {
+        return source.SourceType switch
+        {
+            SourceType.String => true,
+            SourceType.Decimal or SourceType.Money =>
+                Value(destination.Scale) >= Value(source.Scale)
+                && IntegerDigits(destination.Precision, destination.Scale)
+                    >= (source.MaxIntegerDigits ?? IntegerDigits(source.Precision, source.Scale)),
+            _ => false
+        };
+    }
+
+    // Providers report the behavior a destination date/time column stores, or null when its type
+    // stores both user-local and time-zone-independent values. A date-only source needs a date
+    // column; other behaviors need a column that is not dedicated to a different behavior.
+    private static bool StoresDifferentDateTimeBehavior(ColumnDefinition source, DestinationColumn destination)
+    {
+        if (source.SourceType != SourceType.DateTime || source.DateTimeBehavior is not { } sourceBehavior)
+        {
+            return false;
+        }
+
+        return sourceBehavior == DateTimeBehavior.DateOnly
+            ? destination.DateTimeBehavior != DateTimeBehavior.DateOnly
+            : destination.DateTimeBehavior is { } destinationBehavior && destinationBehavior != sourceBehavior;
+    }
+
+    // Dataverse cannot change a column's type in place, so a different type means the column was
+    // replaced. The synchronization mode decides what happens to the old column, as it does for
+    // removed columns: complete mode drops it, and noDataLoss keeps its values under a new name.
+    // Either way the new column is added and filled by a full read.
+    private static SchemaChange ReplaceColumn(
+        string name,
+        string reason,
+        SynchronizationMode mode,
+        Dictionary<string, DestinationColumn> destinationColumns,
+        DateTimeOffset? now)
+    {
+        if (mode != SynchronizationMode.NoDataLoss)
+        {
+            return new SchemaChange(
+                SchemaChangeKind.ReplaceColumn,
+                name,
+                $"Replace destination column '{name}' because {reason}; drop it, add the new column, and reload the table.",
+                true,
+                false);
+        }
+
+        var preservedName = $"{name}_replaced_{(now ?? DateTimeOffset.UtcNow).UtcDateTime:yyyyMMdd}";
+        return destinationColumns.ContainsKey(preservedName)
+            ? Incompatible(
+                name,
+                $"Column '{name}' must be replaced because {reason}, but destination column '{preservedName}' already exists to preserve its values. Rename or remove that column, then rerun.")
+            : new SchemaChange(
+                SchemaChangeKind.ReplaceColumn,
+                name,
+                $"Replace destination column '{name}' because {reason}; rename it to '{preservedName}', add the new column, and reload the table.",
+                true,
+                false,
+                preservedName);
     }
 
     // A retained column no longer receives values, so new rows would violate a NOT NULL constraint

@@ -8,7 +8,8 @@ public sealed record DestinationColumn(
     bool IsNullable,
     int? MaxLength = null,
     int? Precision = null,
-    int? Scale = null);
+    int? Scale = null,
+    DateTimeBehavior? DateTimeBehavior = null);
 
 public sealed record DestinationTable(
     string Schema,
@@ -31,7 +32,9 @@ public enum SchemaChangeKind
     IncompatibleColumn,
     OwnershipConflict,
     RelaxColumnNullability,
-    UnsupportedColumnRetained
+    UnsupportedColumnRetained,
+    NarrowerSourceColumn,
+    ReplaceColumn
 }
 
 public static class ManagedColumnNames

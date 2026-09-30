@@ -20,6 +20,20 @@ public sealed class ConfigurationFileTests : IDisposable
         Assert.Equal(["account"], Assert.Single(configuration.Jobs).Tables);
     }
 
+    [Fact]
+    public async Task LoadAsync_AcceptsDeprecatedSchemaSettingsForCompatibility()
+    {
+        var json = ValidJson();
+        json["jobs"]![0]!["schema"] = JsonNode.Parse("""
+            { "columnRenames": {}, "dropColumns": "manual", "dropTables": "automatic", "incompatibleChanges": "automatic" }
+            """);
+        var path = await WriteAsync(json);
+
+        var configuration = await ConfigurationFile.LoadAsync(path, CancellationToken.None);
+
+        Assert.Equal(SchemaAction.Automatic, configuration.Jobs[0].Schema.IncompatibleChanges);
+    }
+
     [Theory]
     [InlineData("jobs")]
     [InlineData("sources")]

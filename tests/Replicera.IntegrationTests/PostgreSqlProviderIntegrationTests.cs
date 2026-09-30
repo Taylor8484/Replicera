@@ -373,6 +373,142 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        await PrepareTableAsync(database.ConnectionString, AccountsTable(nameLength: 200));
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var narrowed = AccountsTable(nameLength: 100);
+        var plan = SchemaPlanner.Plan(narrowed, await schema.ReadTableAsync(narrowed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync("integration", narrowed, plan, TestCancellationToken);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", narrowed, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Short", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var destination = await schema.ReadTableAsync(narrowed, TestCancellationToken);
+        Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
+    }
+
+    [Theory]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [InlineData(SynchronizationMode.Complete)]
+    [InlineData(SynchronizationMode.NoDataLoss)]
+    public async Task ColumnWithChangedType_IsReplacedAccordingToMode(SynchronizationMode mode)
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition CodeTable(bool numeric) => new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = 100 },
+                numeric
+                    ? new ColumnDefinition { LogicalName = "code", SourceType = SourceType.Int32, IsNullable = true }
+                    : new ColumnDefinition { LogicalName = "code", SourceType = SourceType.String, IsNullable = true, MaxLength = 20 }
+            ]);
+        await new PostgreSqlMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        await schema.ApplySchemaPlanAsync("integration", CodeTable(false), SchemaPlanner.Plan(CodeTable(false), null, new SchemaPolicy(), mode), TestCancellationToken);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var stateStore = new PostgreSqlReplicationStateStore(database.ConnectionString);
+        var noDataLoss = mode == SynchronizationMode.NoDataLoss;
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", CodeTable(false), TestCancellationToken, replaceExisting: !noDataLoss, retainDeletedRows: noDataLoss, mode: mode))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage([new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Row", ["code"] = "A-1" })], null, null, false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var replaced = CodeTable(true);
+        var plan = SchemaPlanner.Plan(
+            replaced,
+            await schema.ReadTableAsync(replaced, TestCancellationToken),
+            new SchemaPolicy(),
+            mode,
+            new DateTimeOffset(2026, 9, 30, 0, 0, 0, TimeSpan.Zero));
+        var replacement = Assert.Single(plan.Changes, change => change.Kind == SchemaChangeKind.ReplaceColumn);
+        Assert.Equal(noDataLoss ? "code_replaced_20260930" : null, replacement.NewObjectName);
+        await schema.ApplySchemaPlanAsync("integration", replaced, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.Null(state!.DataCheckpoint);
+        var destination = await schema.ReadTableAsync(replaced, TestCancellationToken);
+        Assert.Equal(SourceType.Int32, destination!.Columns.Single(column => string.Equals(column.Name, "code", StringComparison.OrdinalIgnoreCase)).SourceType);
+        Assert.Equal(noDataLoss, destination.Columns.Any(column => string.Equals(column.Name, "code_replaced_20260930", StringComparison.OrdinalIgnoreCase)));
+
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", replaced, TestCancellationToken, replaceExisting: !noDataLoss, retainDeletedRows: noDataLoss, mode: mode))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage([new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Row", ["code"] = 42 })], null, null, false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-2", new(1, 1, 0, 1, 0), TestCancellationToken);
+        }
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand(
+            noDataLoss
+                ? "SELECT concat(code, '|', code_replaced_20260930) FROM public.account;"
+                : "SELECT concat(code, '|') FROM public.account;",
+            connection);
+        Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition EventTable(DateTimeBehavior userLocal, DateTimeBehavior independent) => new TableDefinition(
+            "event",
+            "events",
+            "event",
+            [
+                new ColumnDefinition { LogicalName = "eventid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "userlocal", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = userLocal },
+                new ColumnDefinition { LogicalName = "independent", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = independent },
+                new ColumnDefinition { LogicalName = "dayonly", SourceType = SourceType.DateTime, IsNullable = true, DateTimeBehavior = DateTimeBehavior.DateOnly }
+            ]);
+        await PrepareTableAsync(database.ConnectionString, EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent));
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var unchanged = EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent);
+        Assert.Empty(SchemaPlanner.Plan(unchanged, await schema.ReadTableAsync(unchanged, TestCancellationToken), new SchemaPolicy()).Changes);
+
+        var changed = EventTable(DateTimeBehavior.DateOnly, DateTimeBehavior.UserLocal);
+        var plan = SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(
+            ["independent", "userlocal"],
+            plan.Changes.Where(change => change.Kind == SchemaChangeKind.ReplaceColumn).Select(change => change.ObjectName).Order(StringComparer.Ordinal));
+        await schema.ApplySchemaPlanAsync("integration", changed, plan, TestCancellationToken);
+        Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy()).Changes);
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

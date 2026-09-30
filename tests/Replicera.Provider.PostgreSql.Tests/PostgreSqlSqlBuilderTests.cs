@@ -37,6 +37,27 @@ public sealed class PostgreSqlSqlBuilderTests
     }
 
     [Fact]
+    public void BuildReplaceColumn_DropsOrRenamesThenAddsColumn()
+    {
+        var table = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "code", SourceType = SourceType.Int32, IsNullable = true }
+            ]);
+
+        Assert.Equal(
+            "ALTER TABLE \"public\".\"account\" DROP COLUMN \"code\";\nALTER TABLE \"public\".\"account\" ADD COLUMN \"code\" integer NULL;",
+            PostgreSqlSchemaManager.BuildReplaceColumn(table, "code", null).ReplaceLineEndings("\n"));
+        Assert.StartsWith(
+            "ALTER TABLE \"public\".\"account\" RENAME COLUMN \"code\" TO \"code_replaced_20260930\";",
+            PostgreSqlSchemaManager.BuildReplaceColumn(table, "code", "code_replaced_20260930"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildApplyStaging_UsesConflictUpsertAndPhysicalDelete()
     {
         var sql = PostgreSqlDmlBuilder.BuildApplyStaging(Table(), "replicera_stage_123");
