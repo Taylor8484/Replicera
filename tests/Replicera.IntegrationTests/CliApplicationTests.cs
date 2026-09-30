@@ -180,6 +180,28 @@ public sealed class CliApplicationTests
         }
     }
 
+    [Theory]
+    [InlineData("00:05:00", 0, 0, 5, 0)]
+    [InlineData("00:00:30", 0, 0, 0, 30)]
+    [InlineData("12:00:00", 0, 12, 0, 0)]
+    [InlineData("1.00:00:00", 1, 0, 0, 0)]
+    public void TryParseInterval_AcceptsExplicitDurations(string value, int days, int hours, int minutes, int seconds)
+    {
+        Assert.True(CliApplication.TryParseInterval(value, out var interval));
+        Assert.Equal(new TimeSpan(days, hours, minutes, seconds), interval);
+    }
+
+    [Theory]
+    [InlineData("5")]
+    [InlineData("5m")]
+    [InlineData("00:05")]
+    [InlineData("-00:05:00")]
+    [InlineData("24:00:00")]
+    public void TryParseInterval_RejectsAmbiguousOrInvalidDurations(string value)
+    {
+        Assert.False(CliApplication.TryParseInterval(value, out _));
+    }
+
     [Fact]
     public async Task UnknownCommand_ReturnsInvalidInput()
     {

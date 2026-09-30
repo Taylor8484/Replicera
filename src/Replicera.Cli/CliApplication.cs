@@ -368,11 +368,11 @@ public static class CliApplication
         var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
         var intervalText = GetOption(arguments, "--interval")
             ?? throw new RepliceraException(ErrorCategory.Configuration, "Option '--interval' is required.");
-        if (!TimeSpan.TryParse(intervalText, System.Globalization.CultureInfo.InvariantCulture, out var interval))
+        if (!TryParseInterval(intervalText, out var interval))
         {
             throw new RepliceraException(
                 ErrorCategory.Configuration,
-                $"Option '--interval' is not a valid duration: '{intervalText}'. Use a value such as '00:05:00'.");
+                $"Option '--interval' must use the format hh:mm:ss or d.hh:mm:ss, such as '00:05:00': '{intervalText}'.");
         }
 
         var runOnStart = HasFlag(arguments, "--run-on-start");
@@ -650,6 +650,15 @@ public static class CliApplication
 
         return values;
     }
+
+    // A bare number such as "5" parses as five days with TimeSpan.TryParse, so require explicit
+    // hours, minutes, and seconds.
+    internal static bool TryParseInterval(string value, out TimeSpan interval) =>
+        TimeSpan.TryParseExact(
+            value,
+            [@"hh\:mm\:ss", @"d\.hh\:mm\:ss"],
+            System.Globalization.CultureInfo.InvariantCulture,
+            out interval);
 
     private static Guid ParseGuid(string value, string option)
     {
