@@ -21,7 +21,7 @@ public static class DataverseClientFactory
                 secret,
                 true,
                 NullLogger.Instance),
-            AuthenticationMethod.Certificate => CreateCertificateClient(source, secrets, secret),
+            AuthenticationMethod.Certificate => CreateCertificateClient(source, secrets, secret, ConstructCertificateClient),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(source),
                 source.Authentication.Method,
@@ -31,10 +31,17 @@ public static class DataverseClientFactory
         return new DataverseService(client);
     }
 
-    private static ServiceClient CreateCertificateClient(
+    internal delegate TClient CertificateClientConstructor<out TClient>(
+        X509Certificate2 certificate,
+        string certificateThumbprint,
+        Uri instanceUrl,
+        string clientId);
+
+    internal static TClient CreateCertificateClient<TClient>(
         SourceConfiguration source,
         ISecretResolver secrets,
-        string base64Pkcs12)
+        string base64Pkcs12,
+        CertificateClientConstructor<TClient> construct)
     {
         string? password = null;
         if (!string.IsNullOrWhiteSpace(source.Authentication.CertificatePasswordEnvironmentVariable))
@@ -56,15 +63,21 @@ public static class DataverseClientFactory
             certificateBytes,
             password,
             X509KeyStorageFlags.EphemeralKeySet);
-        return new ServiceClient(
-            certificate,
-            StoreName.My,
-            source.ClientId.ToString("D"),
-            source.Url,
-            true,
-            null!,
-            string.Empty,
-            null!,
-            NullLogger.Instance);
+        return construct(certificate, certificate.Thumbprint, source.Url, source.ClientId.ToString("D"));
     }
+
+    private static ServiceClient ConstructCertificateClient(
+        X509Certificate2 certificate,
+        string certificateThumbprint,
+        Uri instanceUrl,
+        string clientId) => new(
+            certificate: certificate,
+            certificateStoreName: StoreName.My,
+            certificateThumbPrint: certificateThumbprint,
+            instanceUrl: instanceUrl,
+            useUniqueInstance: true,
+            orgDetail: null!,
+            clientId: clientId,
+            redirectUri: null!,
+            logger: NullLogger.Instance);
 }
