@@ -10,6 +10,20 @@ namespace Replicera.Dataverse.Tests;
 public sealed class DataverseServiceRetryTests
 {
     [Fact]
+    public async Task DisposeAsync_DisposesOwnedResource()
+    {
+        var resource = new TrackingDisposable();
+        var service = new DataverseService(
+            (_, _) => Task.FromResult<OrganizationResponse>(new WhoAmIResponse()),
+            (_, _) => Task.CompletedTask,
+            ownedResource: resource);
+
+        await service.DisposeAsync();
+
+        Assert.True(resource.Disposed);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_HonorsRetryAfterAndRecovers()
     {
         var attempts = 0;
@@ -342,5 +356,12 @@ public sealed class DataverseServiceRetryTests
         var fault = new OrganizationServiceFault { ErrorCode = -1 };
         fault.ErrorDetails["ApiExceptionHttpStatusCode"] = statusCode;
         return fault;
+    }
+
+    private sealed class TrackingDisposable : IDisposable
+    {
+        public bool Disposed { get; private set; }
+
+        public void Dispose() => Disposed = true;
     }
 }

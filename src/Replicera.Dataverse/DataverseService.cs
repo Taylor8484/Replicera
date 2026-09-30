@@ -27,9 +27,14 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
     private readonly int maxRetryCount;
     private readonly TimeSpan retryPause;
     private readonly Func<double> jitter;
+    private readonly IDisposable? ownedResource;
 
-    public DataverseService(ServiceClient client)
-        : this(client.ExecuteAsync, Task.Delay, DefaultMaxRetryCount, DefaultRetryPause)
+    /// <summary>
+    /// Wraps a Dataverse client. <paramref name="ownedResource"/>, such as the certificate the client
+    /// signs in with, must outlive the client and is disposed with it.
+    /// </summary>
+    public DataverseService(ServiceClient client, IDisposable? ownedResource = null)
+        : this(client.ExecuteAsync, Task.Delay, DefaultMaxRetryCount, DefaultRetryPause, ownedResource: ownedResource)
     {
         this.client = client;
     }
@@ -39,9 +44,11 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
         Func<TimeSpan, CancellationToken, Task> delay,
         int maxRetryCount = DefaultMaxRetryCount,
         TimeSpan? retryPause = null,
-        Func<double>? jitter = null)
+        Func<double>? jitter = null,
+        IDisposable? ownedResource = null)
     {
         this.execute = execute;
+        this.ownedResource = ownedResource;
         this.delay = delay;
         this.maxRetryCount = maxRetryCount;
         this.retryPause = retryPause ?? DefaultRetryPause;
@@ -153,7 +160,15 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        client?.Dispose();
+        try
+        {
+            client?.Dispose();
+        }
+        finally
+        {
+            ownedResource?.Dispose();
+        }
+
         return ValueTask.CompletedTask;
     }
 }

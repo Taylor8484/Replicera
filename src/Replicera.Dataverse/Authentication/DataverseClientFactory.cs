@@ -13,6 +13,7 @@ public static class DataverseClientFactory
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(secrets);
         var secret = secrets.Resolve(source.Authentication.SecretEnvironmentVariable);
+        X509Certificate2? certificate = null;
         var client = source.Authentication.Method switch
         {
             AuthenticationMethod.ClientSecret => new ServiceClient(
@@ -21,14 +22,22 @@ public static class DataverseClientFactory
                 secret,
                 true,
                 NullLogger.Instance),
-            AuthenticationMethod.Certificate => CreateCertificateClient(source, secrets, secret, ConstructCertificateClient),
+            AuthenticationMethod.Certificate => CreateCertificateClient(
+                source,
+                secrets,
+                secret,
+                (loaded, thumbprint, instanceUrl, clientId) =>
+                {
+                    certificate = loaded;
+                    return ConstructCertificateClient(loaded, thumbprint, instanceUrl, clientId);
+                }),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(source),
                 source.Authentication.Method,
                 "Unsupported Dataverse authentication method.")
         };
         client.MaxRetryCount = 0;
-        return new DataverseService(client);
+        return new DataverseService(client, certificate);
     }
 
     internal delegate TClient CertificateClientConstructor<out TClient>(
@@ -63,7 +72,15 @@ public static class DataverseClientFactory
             certificateBytes,
             password,
             X509KeyStorageFlags.EphemeralKeySet);
-        return construct(certificate, certificate.Thumbprint, source.Url, source.ClientId.ToString("D"));
+        try
+        {
+            return construct(certificate, certificate.Thumbprint, source.Url, source.ClientId.ToString("D"));
+        }
+        catch
+        {
+            certificate.Dispose();
+            throw;
+        }
     }
 
     private static ServiceClient ConstructCertificateClient(
