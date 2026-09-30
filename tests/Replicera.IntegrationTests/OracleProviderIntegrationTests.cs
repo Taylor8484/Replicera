@@ -124,6 +124,52 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task NoDataLossFullRead_RetainsRowsMissingFromSourceWithRemovalDate()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_{suffix}");
+        await PrepareTableAsync(connectionString, job, table, SynchronizationMode.NoDataLoss);
+        var writer = new OracleDestinationWriter(connectionString);
+        var keptId = Guid.NewGuid();
+        var removedId = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync(
+            job, table, TestCancellationToken, replaceExisting: false, retainDeletedRows: true, mode: SynchronizationMode.NoDataLoss))
+        {
+            _ = await session.ApplyPageAsync(
+                Page(Upsert(keptId, "Kept", 1), Upsert(removedId, "Removed", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 2, 2, 0, 0), TestCancellationToken);
+        }
+
+        await using (var session = await writer.BeginInitialSyncAsync(
+            job, table, TestCancellationToken, replaceExisting: false, retainDeletedRows: true, mode: SynchronizationMode.NoDataLoss))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(keptId, "Kept", 2)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-2", new(1, 1, 0, 1, 0), TestCancellationToken);
+        }
+
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var rows = connection.CreateCommand();
+        rows.CommandText = $"SELECT NAME, CASE WHEN DATE_SOURCE_REMOVE_DTE IS NULL THEN 0 ELSE 1 END FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} ORDER BY NAME";
+        await using var reader = await rows.ExecuteReaderAsync(TestCancellationToken);
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal("Kept", reader.GetString(0));
+        Assert.Equal(0, reader.GetInt32(1));
+        Assert.True(await reader.ReadAsync(TestCancellationToken));
+        Assert.Equal("Removed", reader.GetString(0));
+        Assert.Equal(1, reader.GetInt32(1));
+        Assert.False(await reader.ReadAsync(TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();
@@ -324,14 +370,19 @@ public sealed class OracleProviderIntegrationTests
 
     private static string UniqueSuffix() => Guid.NewGuid().ToString("N")[..12];
 
-    private static async Task PrepareTableAsync(string connectionString, string job, TableDefinition table)
+    private static async Task PrepareTableAsync(
+        string connectionString,
+        string job,
+        TableDefinition table,
+        SynchronizationMode mode = SynchronizationMode.Complete)
     {
         await new OracleMetadataStore(connectionString).EnsureCreatedAsync(TestCancellationToken);
         var schema = new OracleSchemaManager(connectionString);
         var plan = SchemaPlanner.Plan(
             table,
             await schema.ReadTableAsync(table, TestCancellationToken),
-            new());
+            new(),
+            mode);
         await schema.ApplySchemaPlanAsync(job, table, plan, TestCancellationToken);
     }
 

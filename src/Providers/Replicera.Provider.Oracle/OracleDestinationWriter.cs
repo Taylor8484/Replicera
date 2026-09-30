@@ -4,7 +4,6 @@ using Oracle.ManagedDataAccess.Client;
 using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
 using Replicera.Core.Models;
-using Replicera.Core.Schema;
 
 namespace Replicera.Provider.Oracle;
 
@@ -71,7 +70,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                 await ExecuteAsync(
                     connection,
                     transaction,
-                    $"UPDATE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} SET {OracleIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)} = COALESCE({OracleIdentifier.Quote(ManagedColumnNames.SourceRemoveDate)}, SYSTIMESTAMP)",
+                    OracleDmlBuilder.BuildMarkAllSourceRemoved(table),
                     cancellationToken).ConfigureAwait(false);
             }
 

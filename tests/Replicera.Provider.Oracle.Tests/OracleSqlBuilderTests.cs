@@ -39,6 +39,16 @@ public sealed class OracleSqlBuilderTests
     }
 
     [Fact]
+    public void BuildMarkAllSourceRemoved_UsesNormalizedManagedColumn()
+    {
+        var sql = OracleDmlBuilder.BuildMarkAllSourceRemoved(Table());
+
+        Assert.Equal(
+            "UPDATE \"ACCOUNT\" SET \"DATE_SOURCE_REMOVE_DTE\" = COALESCE(\"DATE_SOURCE_REMOVE_DTE\", SYSTIMESTAMP)",
+            sql);
+    }
+
+    [Fact]
     public void BuildCreateStaging_AllowsSparseDeleteRecords()
     {
         var sql = OracleDmlBuilder.BuildCreateStaging(Table(), "REPLICERA_STAGE_123");
