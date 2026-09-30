@@ -44,6 +44,11 @@ public static class ConfigurationValidator
             }
 
             ValidateEnvironmentVariable(destination.ConnectionStringEnvironmentVariable, $"{path}.connectionStringEnvironmentVariable", issues);
+            if (destination.CommandTimeout is { } timeout
+                && (timeout < TimeSpan.Zero || timeout > DestinationConfiguration.MaximumCommandTimeout))
+            {
+                issues.Add(new($"{path}.commandTimeout", "Command timeout must be between 00:00:00 (no limit) and 24:00:00."));
+            }
         }
 
         for (var index = 0; index < configuration.Jobs.Count; index++)

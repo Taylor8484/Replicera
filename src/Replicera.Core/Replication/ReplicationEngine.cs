@@ -168,7 +168,7 @@ public sealed partial class ReplicationEngine
                 FailureMessage(exception)).ConfigureAwait(false);
             throw;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             LogReplicationCancelled(
                 logger,
@@ -182,8 +182,12 @@ public sealed partial class ReplicationEngine
                 "Synchronization was cancelled before the checkpoint could be committed.").ConfigureAwait(false);
             throw;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception)
         {
+            // A cancellation nobody requested comes from a driver whose statement timed out.
+            var message = exception is OperationCanceledException
+                ? "A database operation timed out before the checkpoint could be committed."
+                : "Synchronization failed before the checkpoint could be committed.";
             LogReplicationFailedUnexpectedly(
                 logger,
                 jobName,
@@ -193,10 +197,10 @@ public sealed partial class ReplicationEngine
                 table.LogicalName,
                 TableState.Failed,
                 ErrorCategory.Synchronization.ToString(),
-                "Synchronization failed before the checkpoint could be committed.").ConfigureAwait(false);
+                message).ConfigureAwait(false);
             throw new RepliceraException(
                 ErrorCategory.Synchronization,
-                "Synchronization failed before the checkpoint could be committed.",
+                message,
                 exception);
         }
     }

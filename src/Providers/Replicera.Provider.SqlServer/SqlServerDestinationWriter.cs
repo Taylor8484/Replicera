@@ -244,6 +244,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             var data = SqlServerBatchTable.Create(table, page);
             using (var bulkCopy = new SqlBulkCopy(connection, SqlBulkCopyOptions.CheckConstraints, transaction))
             {
+                bulkCopy.BulkCopyTimeout = connection.CommandTimeout;
                 bulkCopy.DestinationTableName = SqlServerDmlBuilder.Staging(stagingName);
                 foreach (DataColumn column in data.Columns)
                 {

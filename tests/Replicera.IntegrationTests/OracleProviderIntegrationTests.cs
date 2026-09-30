@@ -763,6 +763,43 @@ public sealed class OracleProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "OracleIntegration")]
+    public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
+    {
+        var connectionString = ConnectionString();
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_timeout_{suffix}");
+        await PrepareTableAsync(connectionString, job, table);
+        var writer = new OracleDestinationWriter(connectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(job, table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Locked", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using var blocker = new OracleConnection(connectionString);
+        await blocker.OpenAsync(TestCancellationToken);
+        await using var blocking = blocker.BeginTransaction();
+        await using (var hold = blocker.CreateCommand())
+        {
+            hold.Transaction = blocking;
+            hold.CommandText = $"UPDATE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} SET \"NAME\" = 'Held'";
+            _ = await hold.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var limited = new OracleProvider(TimeSpan.FromSeconds(2)).CreateWriter(connectionString);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        // ODP.NET reports a statement timeout as a cancellation caused by ORA-01013.
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => limited.BeginInitialSyncAsync(job, table, TestCancellationToken));
+        Assert.Equal(1013, Assert.IsType<OracleException>(error.InnerException).Number);
+
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
+    }
+
+    [SkippableFact]
+    [Trait("Category", "OracleIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
         var connectionString = ConnectionString();

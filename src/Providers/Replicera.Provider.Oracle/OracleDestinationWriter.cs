@@ -8,8 +8,11 @@ using Replicera.Core.Models;
 
 namespace Replicera.Provider.Oracle;
 
-public sealed class OracleDestinationWriter(string connectionString) : IDestinationWriter
+public sealed class OracleDestinationWriter(string connectionString, TimeSpan? commandTimeout = null) : IDestinationWriter
 {
+    // Applies to the statements that write synchronized rows; ODP.NET has no connection-wide timeout.
+    private readonly int commandTimeoutSeconds = CommandTimeouts.ToSeconds(commandTimeout ?? DestinationConfiguration.DefaultCommandTimeout);
+
     public Task<IReplicationSession> BeginInitialSyncAsync(
         string jobName,
         TableDefinition table,
@@ -64,7 +67,8 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                     connection,
                     transaction,
                     $"DELETE FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))}",
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    commandTimeoutSeconds).ConfigureAwait(false);
             }
             else if (syncType == "Initial" && retainDeletedRows)
             {
@@ -72,10 +76,11 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
                     connection,
                     transaction,
                     OracleDmlBuilder.BuildMarkAllSourceRemoved(table),
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    commandTimeoutSeconds).ConfigureAwait(false);
             }
 
-            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode);
+            return new Session(connection, transaction, runId, tableId, table, stagingName, syncType, retainDeletedRows, mode, commandTimeoutSeconds);
         }
         catch
         {
@@ -187,10 +192,12 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         OracleConnection connection,
         OracleTransaction? transaction,
         string sql,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int commandTimeoutSeconds = 0)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        command.CommandTimeout = commandTimeoutSeconds;
 #pragma warning disable CA2100 // SQL is generated solely from normalized and quoted provider-owned identifiers.
         command.CommandText = sql;
 #pragma warning restore CA2100
@@ -222,7 +229,8 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
         string stagingName,
         string syncType,
         bool retainDeletedRows,
-        SynchronizationMode mode) : IReplicationSession
+        SynchronizationMode mode,
+        int commandTimeoutSeconds) : IReplicationSession
     {
         private bool completed;
 
@@ -236,9 +244,9 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
 
             await InsertStagingAsync(page, cancellationToken).ConfigureAwait(false);
             var result = await CountOperationsAsync(cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows), cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildDeleteStagingChanges(table, stagingName, retainDeletedRows), cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildClearStaging(stagingName), cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildApplyStaging(table, stagingName, retainDeletedRows), cancellationToken, commandTimeoutSeconds).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildDeleteStagingChanges(table, stagingName, retainDeletedRows), cancellationToken, commandTimeoutSeconds).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, OracleDmlBuilder.BuildClearStaging(stagingName), cancellationToken, commandTimeoutSeconds).ConfigureAwait(false);
             return result;
         }
 
@@ -327,6 +335,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
             var parameterNames = Enumerable.Range(0, columnNames.Length).Select(index => $":p{index}").ToArray();
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            command.CommandTimeout = commandTimeoutSeconds;
             command.BindByName = true;
             command.ArrayBindCount = page.Records.Count;
 #pragma warning disable CA2100 // Identifiers are normalized and quoted by the provider.
@@ -359,6 +368,7 @@ public sealed class OracleDestinationWriter(string connectionString) : IDestinat
             var operation = OracleIdentifier.Quote(OracleDmlBuilder.OperationColumn);
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
+            command.CommandTimeout = commandTimeoutSeconds;
 #pragma warning disable CA2100 // SQL is generated solely from normalized and quoted provider-owned identifiers.
             command.CommandText = $"""
                 SELECT

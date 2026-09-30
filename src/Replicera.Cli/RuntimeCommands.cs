@@ -426,15 +426,15 @@ internal static class RuntimeCommands
             job,
             source,
             secrets.Resolve(destination.ConnectionStringEnvironmentVariable),
-            CreateProvider(destination.Provider),
+            CreateProvider(destination.Provider, destination.CommandTimeout),
             secrets);
     }
 
-    private static IDestinationProvider CreateProvider(string providerName) => providerName.ToLowerInvariant() switch
+    private static IDestinationProvider CreateProvider(string providerName, TimeSpan? commandTimeout) => providerName.ToLowerInvariant() switch
     {
-        "sqlserver" => new SqlServerProvider(),
-        "postgresql" or "postgres" => new PostgreSqlProvider(),
-        "oracle" => new OracleProvider(),
+        "sqlserver" => new SqlServerProvider(commandTimeout),
+        "postgresql" or "postgres" => new PostgreSqlProvider(commandTimeout),
+        "oracle" => new OracleProvider(commandTimeout),
         _ => throw new RepliceraException(ErrorCategory.Configuration, $"Unsupported provider '{providerName}'.")
     };
 

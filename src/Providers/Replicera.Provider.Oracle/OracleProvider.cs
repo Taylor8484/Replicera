@@ -2,7 +2,11 @@ using Replicera.Core.Abstractions;
 
 namespace Replicera.Provider.Oracle;
 
-public sealed class OracleProvider : IDestinationProvider
+/// <param name="commandTimeout">
+/// The configured statement timeout for writing synchronized rows. When null,
+/// <see cref="Core.Configuration.DestinationConfiguration.DefaultCommandTimeout"/> applies.
+/// </param>
+public sealed class OracleProvider(TimeSpan? commandTimeout = null) : IDestinationProvider
 {
     public string ProviderName => "oracle";
 
@@ -15,7 +19,7 @@ public sealed class OracleProvider : IDestinationProvider
         new OracleSchemaManager(connectionString);
 
     public IDestinationWriter CreateWriter(string connectionString) =>
-        new OracleDestinationWriter(connectionString);
+        new OracleDestinationWriter(connectionString, commandTimeout);
 
     public IReplicationStateStore CreateStateStore(string connectionString) =>
         new OracleReplicationStateStore(connectionString);

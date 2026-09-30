@@ -142,6 +142,25 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_ReportsUnrequestedCancellationAsTimeoutFailure()
+    {
+        var state = new FakeStateStore(null);
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, false, "token")]),
+            new FakeDestination(new FakeSession { ApplyException = new OperationCanceledException("ORA-01013") }),
+            state);
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Synchronization, error.Category);
+        Assert.Contains("timed out", error.Message, StringComparison.Ordinal);
+        Assert.IsType<OperationCanceledException>(error.InnerException);
+        Assert.Equal(TableState.Failed, state.MarkedState);
+        Assert.Contains("timed out", state.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SyncAsync_MarksExpiredCheckpointForResync()
     {
         var state = new FakeStateStore(
@@ -184,14 +203,16 @@ public sealed class ReplicationEngineTests
     public async Task SyncAsync_BoundsFailureRecordingWhenDestinationDoesNotRespond()
     {
         var state = new HangingStateStore();
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
         var engine = new ReplicationEngine(
-            new ThrowingSource(new OperationCanceledException()),
+            new ThrowingSource(new OperationCanceledException(cancellation.Token)),
             new FakeDestination(new FakeSession()),
             state,
             null,
             TimeSpan.FromMilliseconds(200));
 
-        var sync = engine.SyncAsync("job", Table(), 100, CancellationToken.None);
+        var sync = engine.SyncAsync("job", Table(), 100, cancellation.Token);
         var finished = await Task.WhenAny(sync, Task.Delay(TimeSpan.FromSeconds(10)));
 
         Assert.Same(sync, finished);
@@ -254,13 +275,15 @@ public sealed class ReplicationEngineTests
     {
         var session = new FakeSession();
         var state = new FakeStateStore(null);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
         var engine = new ReplicationEngine(
-            new ThrowingSource(new OperationCanceledException()),
+            new ThrowingSource(new OperationCanceledException(cancellation.Token)),
             new FakeDestination(session),
             state);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+            () => engine.SyncAsync("job", Table(), 100, cancellation.Token));
 
         Assert.Null(session.CommittedCheckpoint);
         Assert.True(session.Disposed);

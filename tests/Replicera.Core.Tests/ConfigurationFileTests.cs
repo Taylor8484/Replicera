@@ -87,6 +87,34 @@ public sealed class ConfigurationFileTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadAsync_ReadsDestinationCommandTimeout()
+    {
+        var json = ValidJson();
+        json["destinations"]![0]!["commandTimeout"] = "00:20:00";
+        var path = await WriteAsync(json);
+
+        var configuration = await ConfigurationFile.LoadAsync(path, CancellationToken.None);
+
+        Assert.Equal(TimeSpan.FromMinutes(20), configuration.Destinations[0].CommandTimeout);
+    }
+
+    [Theory]
+    [InlineData("-00:00:01")]
+    [InlineData("1.00:00:01")]
+    public async Task LoadAsync_RejectsCommandTimeoutOutsideRange(string timeout)
+    {
+        var json = ValidJson();
+        json["destinations"]![0]!["commandTimeout"] = timeout;
+        var path = await WriteAsync(json);
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => ConfigurationFile.LoadAsync(path, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Configuration, exception.Category);
+        Assert.Contains("commandTimeout", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CreateAsync_ReportsMissingDirectoryAsConfigurationError()
     {
         var path = Path.Combine(directory.FullName, "missing", "replicera.json");

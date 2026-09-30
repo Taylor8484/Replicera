@@ -572,6 +572,31 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using var blocker = new NpgsqlConnection(database.ConnectionString);
+        await blocker.OpenAsync(TestCancellationToken);
+        await using var blocking = await blocker.BeginTransactionAsync(TestCancellationToken);
+        await using (var hold = new NpgsqlCommand("LOCK TABLE public.account IN ACCESS EXCLUSIVE MODE;", blocker, blocking))
+        {
+            _ = await hold.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var writer = new PostgreSqlProvider(TimeSpan.FromSeconds(2)).CreateWriter(database.ConnectionString);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(
+            () => writer.BeginInitialSyncAsync("integration", table, TestCancellationToken));
+
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
+    }
+
+    [SkippableFact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
         await using var unmanagedDatabase = await TestDatabase.CreateAsync();

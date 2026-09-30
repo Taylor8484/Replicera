@@ -272,6 +272,33 @@ public sealed class SqlServerProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using var blocker = new SqlConnection(database.ConnectionString);
+        await blocker.OpenAsync(TestCancellationToken);
+        await using var blocking = (SqlTransaction)await blocker.BeginTransactionAsync(TestCancellationToken);
+        await using (var hold = blocker.CreateCommand())
+        {
+            hold.Transaction = blocking;
+            hold.CommandText = "SELECT COUNT_BIG(*) FROM [dbo].[account] WITH (TABLOCKX, HOLDLOCK);";
+            _ = await hold.ExecuteScalarAsync(TestCancellationToken);
+        }
+
+        var writer = new SqlServerProvider(TimeSpan.FromSeconds(2)).CreateWriter(database.ConnectionString);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        _ = await Assert.ThrowsAsync<SqlException>(
+            () => writer.BeginInitialSyncAsync("integration", table, TestCancellationToken));
+
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
+    }
+
+    [SkippableFact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_ReadsUnmanagedTableWithoutMetadataSchema()
     {
         await using var database = await TestDatabase.CreateAsync();
