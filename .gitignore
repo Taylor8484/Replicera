@@ -18,7 +18,6 @@ replicera.local.json
 .replicera-test-state/
 
 # Local development guidance and planning
-AGENTS.md
 SPEC.md
 PLAN.md
 docs/feature-review.md
