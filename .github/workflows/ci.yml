@@ -41,6 +41,8 @@ jobs:
           global-json-file: global.json
       - run: dotnet restore Replicera.sln --locked-mode
       - run: dotnet format Replicera.sln --no-restore --verify-no-changes
+      - name: Check third-party notices
+        run: python3 scripts/generate_third_party_notices.py --check
 
   sql-server-integration:
     runs-on: ubuntu-latest
