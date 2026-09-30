@@ -122,4 +122,4 @@ Dataverse requests are retried up to three times when Dataverse reports service-
 - **Exit 7:** check the failed run and table state, correct the transient or destination error, then rerun.
 - **Exit 8:** perform the controlled full resynchronization above.
 
-Use `replicera status --job <job> --json` to inspect table state and last success. Error output intentionally omits raw SDK and SQL messages because they may contain credentials, connection details, row values, or change tokens.
+Use `replicera status --job <job> --json` to inspect table state and last success. `status` only reads: against a destination Replicera has not used yet it reports every table as `Uninitialized`, and if the metadata was created by an earlier Replicera version it exits with code `6` and asks you to run `sync`, which upgrades it. Error output intentionally omits raw SDK and SQL messages because they may contain credentials, connection details, row values, or change tokens.

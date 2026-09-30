@@ -36,6 +36,11 @@ public sealed class SqlServerProvider(TimeSpan? commandTimeout = null) : IDestin
     public Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken) =>
         new SqlServerMetadataStore(Configure(connectionString)).EnsureCreatedAsync(cancellationToken);
 
+    public async Task<MetadataStoreState> GetMetadataStoreStateAsync(string connectionString, CancellationToken cancellationToken) =>
+        MetadataStoreStates.FromVersion(
+            await new SqlServerMetadataStore(Configure(connectionString)).GetSchemaVersionAsync(cancellationToken).ConfigureAwait(false),
+            SqlServerMetadataStore.CurrentSchemaVersion);
+
     /// <summary>Applies the command timeout to every statement run on connections from this string.</summary>
     public string Configure(string connectionString)
     {

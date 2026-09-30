@@ -1,4 +1,5 @@
 using Oracle.ManagedDataAccess.Client;
+using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
 using Replicera.Core.Errors;
 using Replicera.Core.Models;
@@ -836,6 +837,17 @@ public sealed class OracleProviderIntegrationTests
         var state = await new OracleReplicationStateStore(connectionString)
             .GetTableStateAsync(job, table.LogicalName, TestCancellationToken);
         Assert.Equal("stable", state?.DataCheckpoint);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "OracleIntegration")]
+    public async Task MetadataStoreState_ReportsCurrentMetadata()
+    {
+        var connectionString = ConnectionString();
+        var provider = new OracleProvider();
+        await provider.EnsureMetadataStoreAsync(connectionString, TestCancellationToken);
+
+        Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(connectionString, TestCancellationToken));
     }
 
     [SkippableFact]

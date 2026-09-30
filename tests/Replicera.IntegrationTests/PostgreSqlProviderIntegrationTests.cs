@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Npgsql;
 using Replicera.Cli;
+using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
 using Replicera.Core.Errors;
 using Replicera.Core.Models;
@@ -568,6 +569,18 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Synchronization", state.LastErrorCode);
         Assert.Equal("Synchronization failed before the checkpoint could be committed.", state.LastErrorMessage);
         Assert.Null(state.DataCheckpoint);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public async Task MetadataStoreState_ReportsMissingThenCurrentWithoutCreatingMetadata()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var provider = new PostgreSqlProvider();
+
+        Assert.Equal(MetadataStoreState.Missing, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+        await provider.EnsureMetadataStoreAsync(database.ConnectionString, TestCancellationToken);
+        Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
     }
 
     [SkippableFact]

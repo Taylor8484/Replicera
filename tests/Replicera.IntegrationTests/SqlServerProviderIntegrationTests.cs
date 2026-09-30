@@ -871,6 +871,64 @@ public sealed class SqlServerProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task Status_DoesNotCreateOrUpgradeMetadata()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var directory = Directory.CreateTempSubdirectory("replicera-status-");
+        var configPath = Path.Combine(directory.FullName, "replicera.json");
+        var connectionVariable = $"REPLICERA_SQL_{Guid.NewGuid():N}";
+        try
+        {
+            Environment.SetEnvironmentVariable(connectionVariable, database.ConnectionString);
+            await ConfigurationFile.SaveAsync(configPath, Configuration(connectionVariable), TestCancellationToken);
+            using var output = new StringWriter();
+
+            var exitCode = await CliApplication.RunAsync(
+                ["status", "--job", "integration", "--json", "--config", configPath],
+                output,
+                TextWriter.Null,
+                TestCancellationToken);
+
+            Assert.Equal(0, exitCode);
+            using (var document = JsonDocument.Parse(output.ToString()))
+            {
+                Assert.Equal("Uninitialized", Assert.Single(document.RootElement.EnumerateArray()).GetProperty("state").GetString());
+            }
+
+            var provider = new SqlServerProvider();
+            Assert.Equal(MetadataStoreState.Missing, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+            await provider.EnsureMetadataStoreAsync(database.ConnectionString, TestCancellationToken);
+            Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+
+            await using (var connection = new SqlConnection(database.ConnectionString))
+            {
+                await connection.OpenAsync(TestCancellationToken);
+                await using var downgrade = connection.CreateCommand();
+                downgrade.CommandText = "DELETE FROM [replicera].[SchemaVersions] WHERE [Version] = 2;";
+                _ = await downgrade.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+
+            using var error = new StringWriter();
+            var outdatedExitCode = await CliApplication.RunAsync(
+                ["status", "--job", "integration", "--config", configPath],
+                TextWriter.Null,
+                error,
+                TestCancellationToken);
+
+            Assert.Equal(6, outdatedExitCode);
+            Assert.Contains("Run sync to upgrade it", error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(MetadataStoreState.Outdated, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(connectionVariable, null);
+            directory.Delete(true);
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task Status_JsonOutputReportsPersistedTableState()
     {
         await using var database = await TestDatabase.CreateAsync();

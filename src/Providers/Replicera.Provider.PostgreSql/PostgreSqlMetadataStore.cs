@@ -24,6 +24,21 @@ public sealed class PostgreSqlMetadataStore(string connectionString)
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Returns the applied metadata version, or 0 when the metadata store does not exist.</summary>
+    public async Task<int> GetSchemaVersionAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var exists = new NpgsqlCommand("SELECT to_regclass('replicera.schema_versions') IS NOT NULL;", connection);
+        if (!(bool)(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false))
+        {
+            return 0;
+        }
+
+        await using var version = new NpgsqlCommand("SELECT COALESCE(MAX(version), 0) FROM replicera.schema_versions;", connection);
+        return Convert.ToInt32(await version.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     internal const string MigrationOne = """
         CREATE SCHEMA IF NOT EXISTS replicera;
 

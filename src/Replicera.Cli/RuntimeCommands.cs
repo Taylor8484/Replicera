@@ -365,12 +365,22 @@ internal static class RuntimeCommands
         CancellationToken cancellationToken)
     {
         var context = await LoadContextAsync(configPath, jobName, cancellationToken).ConfigureAwait(false);
-        await context.Provider.EnsureMetadataStoreAsync(context.ConnectionString, cancellationToken).ConfigureAwait(false);
-        var store = context.Provider.CreateStateStore(context.ConnectionString);
+        // Status only reads: it never creates or upgrades the metadata store.
+        var metadata = await context.Provider.GetMetadataStoreStateAsync(context.ConnectionString, cancellationToken).ConfigureAwait(false);
+        if (metadata == MetadataStoreState.Outdated)
+        {
+            throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                "The destination's Replicera metadata was created by an earlier version. Run sync to upgrade it, then check status again.");
+        }
+
+        var store = metadata == MetadataStoreState.Current ? context.Provider.CreateStateStore(context.ConnectionString) : null;
         var statuses = new List<StatusOutput>();
         foreach (var table in context.Job.Tables)
         {
-            var state = await store.GetTableStateAsync(context.Job.Name, table, cancellationToken).ConfigureAwait(false);
+            var state = store is null
+                ? null
+                : await store.GetTableStateAsync(context.Job.Name, table, cancellationToken).ConfigureAwait(false);
             statuses.Add(new StatusOutput(
                 context.Job.Name,
                 table,

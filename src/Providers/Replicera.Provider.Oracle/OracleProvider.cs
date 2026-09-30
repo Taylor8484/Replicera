@@ -33,4 +33,9 @@ public sealed class OracleProvider(TimeSpan? commandTimeout = null) : IDestinati
 
     public Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken) =>
         new OracleMetadataStore(connectionString).EnsureCreatedAsync(cancellationToken);
+
+    public async Task<MetadataStoreState> GetMetadataStoreStateAsync(string connectionString, CancellationToken cancellationToken) =>
+        MetadataStoreStates.FromVersion(
+            await new OracleMetadataStore(connectionString).GetSchemaVersionAsync(cancellationToken).ConfigureAwait(false),
+            OracleMetadataStore.CurrentSchemaVersion);
 }

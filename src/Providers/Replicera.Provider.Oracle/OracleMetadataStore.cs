@@ -32,6 +32,14 @@ public sealed class OracleMetadataStore(string connectionString)
         }
     }
 
+    /// <summary>Returns the applied metadata version, or 0 when the metadata store does not exist.</summary>
+    public async Task<int> GetSchemaVersionAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new OracleConnection(connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await GetSchemaVersionAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task ApplyMigrationsAsync(OracleConnection connection, CancellationToken cancellationToken)
     {
         foreach (var statement in MigrationOne)

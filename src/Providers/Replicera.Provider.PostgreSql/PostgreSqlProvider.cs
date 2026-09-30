@@ -36,6 +36,11 @@ public sealed class PostgreSqlProvider(TimeSpan? commandTimeout = null) : IDesti
     public Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken) =>
         new PostgreSqlMetadataStore(Configure(connectionString)).EnsureCreatedAsync(cancellationToken);
 
+    public async Task<MetadataStoreState> GetMetadataStoreStateAsync(string connectionString, CancellationToken cancellationToken) =>
+        MetadataStoreStates.FromVersion(
+            await new PostgreSqlMetadataStore(Configure(connectionString)).GetSchemaVersionAsync(cancellationToken).ConfigureAwait(false),
+            PostgreSqlMetadataStore.CurrentSchemaVersion);
+
     /// <summary>Applies the command timeout to every statement run on connections from this string.</summary>
     public string Configure(string connectionString)
     {
