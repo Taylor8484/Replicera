@@ -1,5 +1,6 @@
 using System.ServiceModel;
 using Microsoft.Crm.Sdk.Messages;
+using Microsoft.PowerPlatform.Dataverse.Client.Utils;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Replicera.Core.Errors;
@@ -161,6 +162,122 @@ public sealed class DataverseServiceRetryTests
         _ = await service.ExecuteAsync(new AssociateRequest(), CancellationToken.None);
 
         Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RetriesTransportFailuresWrappedBySdk()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                return attempts switch
+                {
+                    1 => throw new HttpRequestException("connection reset"),
+                    2 => throw new DataverseOperationException("wrapped", new TimeoutException()),
+                    _ => Task.FromResult<OrganizationResponse>(new WhoAmIResponse())
+                };
+            },
+            (_, _) => Task.CompletedTask);
+
+        _ = await service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None);
+
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReportsExhaustedTransportFailureAsSourceConnectivity()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                throw new TaskCanceledException("client timeout");
+            },
+            (_, _) => Task.CompletedTask,
+            maxRetryCount: 2);
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.SourceConnectivity, exception.Category);
+        Assert.Equal(3, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ClassifiesFaultWrappedBySdk()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                throw new DataverseOperationException(
+                    "wrapped",
+                    new FaultException<OrganizationServiceFault>(new OrganizationServiceFault { ErrorCode = unchecked((int)0x80040220) }));
+            },
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Authorization, exception.Category);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DoesNotRetryWhenCallerCancels()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, token) =>
+            {
+                attempts++;
+                cancellation.Cancel();
+                token.ThrowIfCancellationRequested();
+                return Task.FromResult<OrganizationResponse>(new WhoAmIResponse());
+            },
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), cancellation.Token));
+
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DoesNotRepeatNonIdempotentRequestAfterTransportFailure()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                throw new HttpRequestException("connection reset");
+            },
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new CreateRequest { Target = new Entity("role") }, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.SourceConnectivity, exception.Category);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RethrowsUnrecognizedExceptionsUnchanged()
+    {
+        var service = new DataverseService(
+            (_, _) => throw new InvalidOperationException("not a Dataverse failure"),
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal("not a Dataverse failure", exception.Message);
     }
 
     private static OrganizationServiceFault Fault(int statusCode)
