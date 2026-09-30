@@ -13,7 +13,7 @@ public sealed class OracleProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_ORACLE_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
@@ -48,7 +48,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Contains(OracleIdentifier.Normalize(viewName), error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task ReloadRecreate_DoesNotLeaveTheOldTableInTheRecycleBin()
     {
@@ -72,7 +72,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(0, Convert.ToInt32(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task StagingSweep_DropsIdleOrphansButNotStagingInUse()
     {
@@ -125,7 +125,7 @@ public sealed class OracleProviderIntegrationTests
         _ = await drop.ExecuteNonQueryAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task ConnectionProbe_ConnectsToConfiguredDatabase()
     {
@@ -134,7 +134,7 @@ public sealed class OracleProviderIntegrationTests
         await new OracleConnectionProbe(connectionString).TestConnectionAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
@@ -188,7 +188,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(1, state.LastRunRecordsDeleted);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task NoDataLossFullRead_RetainsRowsMissingFromSourceWithRemovalDate()
     {
@@ -230,7 +230,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.False(await reader.ReadAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task LongStringColumns_ReplanCleanlyAndWidenIntoNclobWithoutLosingData()
     {
@@ -283,7 +283,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
     {
@@ -323,7 +323,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(1, Convert.ToInt32(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
@@ -362,7 +362,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
@@ -421,7 +421,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(99999999999.25m, Convert.ToDecimal(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
@@ -485,7 +485,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
@@ -520,7 +520,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.True(relaxed!.Columns.Single(column => column.Name == "LEGACY").IsNullable);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
@@ -546,7 +546,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [SkippableTheory]
+    [Theory]
     [Trait("Category", "OracleIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
@@ -619,7 +619,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
@@ -652,7 +652,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync(job, changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
@@ -691,7 +691,7 @@ public sealed class OracleProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
     {
@@ -739,7 +739,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Null(state?.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task FailureAfterCreateTable_LeavesTableManagedForTheNextRun()
     {
@@ -789,7 +789,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(table, await schema.ReadTableAsync(job, table, TestCancellationToken), new()).Changes);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task MetadataStore_ConcurrentRunsAllSucceed()
     {
@@ -799,7 +799,7 @@ public sealed class OracleProviderIntegrationTests
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.EnsureCreatedAsync(TestCancellationToken))));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
@@ -839,7 +839,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal("stable", state?.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task MetadataStoreState_ReportsCurrentMetadata()
     {
@@ -850,7 +850,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(connectionString, TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task CheckpointPersistenceFailure_RollsBackAppliedRows()
     {
@@ -892,7 +892,7 @@ public sealed class OracleProviderIntegrationTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
     {
@@ -952,7 +952,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Equal(expectedCheckpoint, value is DBNull or null ? null : (string)value);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
     {
@@ -989,7 +989,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
@@ -1048,7 +1048,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "DESCRIPTION");
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task FailureState_IsDurableAndDoesNotExposeCheckpoint()
     {
@@ -1074,7 +1074,7 @@ public sealed class OracleProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "OracleIntegration")]
     public async Task SupportedValues_RoundTripThroughArrayBinding()
     {

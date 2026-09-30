@@ -130,21 +130,21 @@ public sealed class ConfigurationFileTests : IDisposable
     public async Task CreateAsync_DoesNotOverwriteExistingFile()
     {
         var path = Path.Combine(directory.FullName, "replicera.json");
-        await File.WriteAllTextAsync(path, "existing");
+        await File.WriteAllTextAsync(path, "existing", TestContext.Current.CancellationToken);
 
         var exception = await Assert.ThrowsAsync<RepliceraException>(
             () => ConfigurationFile.CreateAsync(path, CancellationToken.None));
 
         Assert.Contains("already exists", exception.Message, StringComparison.Ordinal);
-        Assert.Equal("existing", await File.ReadAllTextAsync(path));
+        Assert.Equal("existing", await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task SaveAsync_PreservesExistingFilePermissions()
     {
         if (OperatingSystem.IsWindows())
         {
-            throw new SkipException("Unix file modes and symbolic links are not tested on Windows.");
+            throw Xunit.Sdk.SkipException.ForSkip("Unix file modes and symbolic links are not tested on Windows.");
         }
 
         var path = await WriteAsync(ValidJson());
@@ -157,12 +157,12 @@ public sealed class ConfigurationFileTests : IDisposable
         Assert.Single(directory.GetFiles());
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task SaveAsync_UpdatesSymbolicLinkTargetAndKeepsLink()
     {
         if (OperatingSystem.IsWindows())
         {
-            throw new SkipException("Unix file modes and symbolic links are not tested on Windows.");
+            throw Xunit.Sdk.SkipException.ForSkip("Unix file modes and symbolic links are not tested on Windows.");
         }
 
         var target = await WriteAsync(ValidJson());

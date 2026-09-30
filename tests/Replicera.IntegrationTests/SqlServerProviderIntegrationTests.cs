@@ -17,7 +17,7 @@ public sealed class SqlServerProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_SQL_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
@@ -49,7 +49,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
@@ -138,7 +138,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DisposedSession_RollsBackRowsAndCheckpoint()
     {
@@ -179,7 +179,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task StagingUsesSessionTemporaryTableOutsideTheDestinationDatabase()
     {
@@ -212,7 +212,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task Sync_SucceedsWithoutPermissionToCreateTables()
     {
@@ -270,7 +270,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
     {
@@ -297,7 +297,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_ReadsUnmanagedTableWithoutMetadataSchema()
     {
@@ -327,7 +327,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(SchemaChangeKind.OwnershipConflict, Assert.Single(plan.Changes).Kind);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_AddsNullableColumnAndWidensText()
     {
@@ -386,7 +386,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(5, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
     {
@@ -427,7 +427,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(1, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
@@ -464,7 +464,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
@@ -520,7 +520,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
@@ -581,7 +581,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
@@ -621,7 +621,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(20, legacyColumn.MaxLength);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
@@ -644,7 +644,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [SkippableTheory]
+    [Theory]
     [Trait("Category", "SqlServerIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
@@ -714,7 +714,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
@@ -744,7 +744,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
@@ -782,7 +782,7 @@ public sealed class SqlServerProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
     {
@@ -793,7 +793,7 @@ public sealed class SqlServerProviderIntegrationTests
         await store.EnsureCreatedAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task TableLock_DistinguishesLongJobNames()
     {
@@ -807,7 +807,7 @@ public sealed class SqlServerProviderIntegrationTests
             await provider.AcquireTableLockAsync(database.ConnectionString, job, "account", TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
@@ -826,7 +826,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SourceFailure_RollsBackDataAndRecordsDurableFailedRun()
     {
@@ -869,7 +869,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task Status_DoesNotCreateOrUpgradeMetadata()
     {
@@ -927,7 +927,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task Status_JsonOutputReportsPersistedTableState()
     {
@@ -982,7 +982,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task RecordRepeatedWithinPage_IsAppliedOnceWithItsLastChange()
     {
@@ -1022,7 +1022,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.False(await reader.ReadAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task MultiPageSync_LoadsEveryPageAndCommitsTerminalCheckpoint()
     {
@@ -1064,7 +1064,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("terminal-checkpoint", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SecondInitialSync_AtomicallyReplacesExistingRows()
     {
@@ -1099,7 +1099,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.False(await reader.ReadAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task SupportedValues_RoundTripAtBoundariesAndPreserveNulls()
     {
@@ -1180,7 +1180,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.True(reader.IsDBNull(3));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task CheckpointPersistenceFailure_RollsBackAppliedRowsAndStagingTable()
     {
@@ -1236,7 +1236,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(0, reader.GetInt64(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
     {
@@ -1275,7 +1275,7 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task AbruptConnectionTermination_RollsBackRowsCheckpointAndStagingTable()
     {

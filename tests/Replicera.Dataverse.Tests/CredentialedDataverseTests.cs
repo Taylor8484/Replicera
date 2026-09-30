@@ -9,7 +9,6 @@ using Replicera.Core.Models;
 using Replicera.Dataverse.Authentication;
 using Replicera.Dataverse.ChangeTracking;
 using Replicera.Dataverse.Security;
-using Xunit.Abstractions;
 
 namespace Replicera.Dataverse.Tests;
 
@@ -267,7 +266,7 @@ public sealed class CredentialedDataverseTests(ITestOutputHelper output)
             createdIds.Add(await CreateAccountAsync(service, "initial-three"));
             var mirroredIds = new HashSet<Guid>();
             string? terminalCheckpoint = null;
-            await using (var pages = reader.ReadChangesAsync(table, null, 1, CancellationToken.None).GetAsyncEnumerator())
+            await using (var pages = reader.ReadChangesAsync(table, null, 1, TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
             {
                 Assert.True(await pages.MoveNextAsync());
                 Assert.True(pages.Current.HasMoreRecords);

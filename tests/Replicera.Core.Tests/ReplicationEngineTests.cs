@@ -213,7 +213,7 @@ public sealed class ReplicationEngineTests
             TimeSpan.FromMilliseconds(200));
 
         var sync = engine.SyncAsync("job", Table(), 100, cancellation.Token);
-        var finished = await Task.WhenAny(sync, Task.Delay(TimeSpan.FromSeconds(10)));
+        var finished = await Task.WhenAny(sync, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
 
         Assert.Same(sync, finished);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sync);

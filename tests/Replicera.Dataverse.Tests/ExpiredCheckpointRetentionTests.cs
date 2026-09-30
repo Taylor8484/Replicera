@@ -15,7 +15,7 @@ public sealed class ExpiredCheckpointRetentionTests
     {
         var path = Environment.GetEnvironmentVariable("REPLICERA_EXPIRED_CHECKPOINT_STATE");
         Assert.False(string.IsNullOrWhiteSpace(path));
-        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
         var root = document.RootElement;
         var tableName = root.GetProperty("table").GetString();
         var checkpoint = root.GetProperty("checkpoint").GetString();

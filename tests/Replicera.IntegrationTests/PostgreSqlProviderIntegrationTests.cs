@@ -15,7 +15,7 @@ public sealed class PostgreSqlProviderIntegrationTests
     private const string ConnectionEnvironmentVariable = "REPLICERA_POSTGRES_TEST_CONNECTION_STRING";
     private static readonly CancellationToken TestCancellationToken = CancellationToken.None;
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task TableLockAndDependencyPreflight_ProtectSchemaLifecycle()
     {
@@ -46,7 +46,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Contains("account_view", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task StateStore_BeforeFirstSyncReturnsUninitializedState()
     {
@@ -56,7 +56,7 @@ public sealed class PostgreSqlProviderIntegrationTests
             .GetTableStateAsync("integration", "account", TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task InitialAndIncrementalSync_CommitRowsMetricsAndCheckpoint()
     {
@@ -113,7 +113,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Succeeded", reader.GetString(4));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DisposedSession_RollsBackRowsCheckpointAndTemporaryStaging()
     {
@@ -150,7 +150,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("stable", reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task CheckpointPersistenceFailure_RollsBackAppliedRows()
     {
@@ -186,7 +186,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         await AssertRowsAndCheckpointAsync(database.ConnectionString, 0, null);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task CancellationWhileApplyingPage_RollsBackRowsAndKeepsCheckpoint()
     {
@@ -229,7 +229,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(expectedCheckpoint, reader.IsDBNull(0) ? null : reader.GetString(0));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DroppedManagedTable_IsRecreatedWithCheckpointClearedForFullRead()
     {
@@ -265,7 +265,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(TableState.ResyncRequired, state.State);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DecimalScaleIncrease_WidensColumnAndPreservesValues()
     {
@@ -320,7 +320,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(99999999999.25m, (decimal)(await command.ExecuteScalarAsync(TestCancellationToken))!);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
     {
@@ -380,7 +380,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task RetainedLegacyColumn_IsRelaxedSoNewRowsCanBeInserted()
     {
@@ -419,7 +419,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.True(relaxed!.Columns.Single(column => column.Name == "legacy").IsNullable);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task NarrowerSourceColumn_KeepsWiderDestinationAndContinuesSyncing()
     {
@@ -442,7 +442,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
-    [SkippableTheory]
+    [Theory]
     [Trait("Category", "PostgreSqlIntegration")]
     [InlineData(SynchronizationMode.Complete)]
     [InlineData(SynchronizationMode.NoDataLoss)]
@@ -513,7 +513,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task DateTimeBehaviorChange_ReplacesOnlyColumnsWhoseStorageDiffers()
     {
@@ -543,7 +543,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task TableLock_DetectsLostLockSession()
     {
@@ -567,7 +567,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         await replacement.EnsureHeldAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task AbruptConnectionTermination_DisposesSessionWithoutMaskingAndRollsBack()
     {
@@ -598,7 +598,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Null(state?.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task MetadataStore_ConcurrentFirstRunsAllSucceed()
     {
@@ -609,7 +609,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         await store.EnsureCreatedAsync(TestCancellationToken);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
@@ -626,7 +626,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Contains("already running", error.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task FailureState_IsDurableAndSanitized()
     {
@@ -650,7 +650,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Null(state.DataCheckpoint);
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task MetadataStoreState_ReportsMissingThenCurrentWithoutCreatingMetadata()
     {
@@ -662,7 +662,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.Equal(MetadataStoreState.Current, await provider.GetMetadataStoreStateAsync(database.ConnectionString, TestCancellationToken));
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConfiguredCommandTimeout_StopsABlockedStatement()
     {
@@ -687,7 +687,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.True(started.Elapsed < TimeSpan.FromSeconds(20), $"The blocked statement ran for {started.Elapsed}.");
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task SchemaManager_RejectsUnmanagedTableAndAppliesSafeExpansion()
     {
@@ -746,7 +746,7 @@ public sealed class PostgreSqlProviderIntegrationTests
         Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "description");
     }
 
-    [SkippableFact]
+    [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
     public async Task SupportedValues_RoundTripAndStatusUsesConfiguredProvider()
     {

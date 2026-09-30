@@ -22,6 +22,6 @@ internal static class IntegrationEnvironment
             throw new InvalidOperationException($"{variable} must be set because {RequiredVariable} is 1.");
         }
 
-        throw new SkipException($"Set {variable} to run this test.");
+        throw Xunit.Sdk.SkipException.ForSkip($"Set {variable} to run this test.");
     }
 }
