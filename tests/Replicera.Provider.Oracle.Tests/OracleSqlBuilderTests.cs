@@ -16,6 +16,27 @@ public sealed class OracleSqlBuilderTests
     }
 
     [Fact]
+    public void BuildCreateTable_AllowsNullsInRequiredSourceColumns()
+    {
+        var table = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = false, MaxLength = 100 }
+            ]);
+
+        var sql = OracleDdlBuilder.BuildCreateTable(table);
+
+        Assert.Contains("\"ACCOUNTID\" RAW(16) NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("\"NAME\" NVARCHAR2(100) NULL", sql, StringComparison.Ordinal);
+        Assert.Equal(
+            "ALTER TABLE \"ACCOUNT\" MODIFY (\"NAME\" NULL)",
+            OracleSchemaManager.BuildRelaxNullability(table, "name"));
+    }
+
+    [Fact]
     public void BuildApplyStaging_UsesMergeAndPhysicalDelete()
     {
         var merge = OracleDmlBuilder.BuildApplyStaging(Table(), "REPLICERA_STAGE_123");

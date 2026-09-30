@@ -281,6 +281,51 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var table = AccountsTable(includeDescription: true);
+        await PrepareTableAsync(database.ConnectionString, table);
+        await using (var connection = new SqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var legacy = connection.CreateCommand();
+            legacy.CommandText = "ALTER TABLE [dbo].[account] ALTER COLUMN [description] nvarchar(1000) NOT NULL;";
+            _ = await legacy.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new SqlServerSchemaManager(database.ConnectionString);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy());
+        var relax = Assert.Single(plan.Changes);
+        Assert.Equal(SchemaChangeKind.RelaxColumnNullability, relax.Kind);
+        Assert.Equal("description", relax.ObjectName);
+        await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
+        var relaxed = await schema.ReadTableAsync(table, TestCancellationToken);
+        Assert.NotNull(relaxed);
+        Assert.True(relaxed.Columns.Single(column => column.Name == "description").IsNullable);
+        Assert.False(relaxed.Columns.Single(column => column.Name == "accountid").IsNullable);
+
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "No description", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using var verify = new SqlConnection(database.ConnectionString);
+        await verify.OpenAsync(TestCancellationToken);
+        await using var command = verify.CreateCommand();
+        command.CommandText = "SELECT COUNT_BIG(*) FROM [dbo].[account] WHERE [description] IS NULL;";
+        Assert.Equal(1, Convert.ToInt64(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

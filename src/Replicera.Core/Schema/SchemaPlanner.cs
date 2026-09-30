@@ -168,6 +168,20 @@ public static class SchemaPlanner
             else if (IsNarrowingOrIncompatible(sourceColumn, destinationColumn))
             {
                 changes.Add(Incompatible(sourceColumn.LogicalName, "The source change is narrowing or incompatible."));
+                continue;
+            }
+
+            if (!sourceColumn.IsPrimaryKey && !destinationColumn.IsNullable)
+            {
+                changes.Add(RelaxNullability(sourceColumn.LogicalName));
+            }
+
+            if (sourceColumn.SourceType == SourceType.Lookup
+                && sourceColumn.LookupTargets.Count > 1
+                && destinationColumns.TryGetValue($"{sourceColumn.LogicalName}_type", out var lookupTypeColumn)
+                && !lookupTypeColumn.IsNullable)
+            {
+                changes.Add(RelaxNullability(lookupTypeColumn.Name));
             }
         }
 
@@ -254,6 +268,15 @@ public static class SchemaPlanner
             _ => false
         };
     }
+
+    // Destination columns other than the primary key accept nulls so that required-level
+    // changes in the source never block replication; business rules are enforced at the source.
+    private static SchemaChange RelaxNullability(string name) => new(
+        SchemaChangeKind.RelaxColumnNullability,
+        name,
+        $"Allow nulls in destination column '{name}'.",
+        true,
+        false);
 
     private static SchemaChange Incompatible(string name, string reason) => new(
         SchemaChangeKind.IncompatibleColumn,

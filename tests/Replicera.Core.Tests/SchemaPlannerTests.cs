@@ -347,6 +347,67 @@ public sealed class SchemaPlannerTests
         Assert.True(change.IsBlocking);
     }
 
+    [Fact]
+    public void Plan_RelaxesNotNullDestinationColumnsExceptPrimaryKey()
+    {
+        var source = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "requiredcode", SourceType = SourceType.String, IsNullable = false, MaxLength = 10 },
+                new ColumnDefinition { LogicalName = "optionalcode", SourceType = SourceType.String, IsNullable = true, MaxLength = 10 },
+                new ColumnDefinition
+                {
+                    LogicalName = "ownerid",
+                    SourceType = SourceType.Lookup,
+                    IsNullable = false,
+                    LookupTargets = ["systemuser", "team"]
+                }
+            ]);
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("requiredcode", SourceType.String, false, 10),
+                new("optionalcode", SourceType.String, false, 10),
+                new("ownerid", SourceType.Lookup, false),
+                new("ownerid_type", SourceType.String, false, 128),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(source, destination, new SchemaPolicy());
+
+        Assert.False(plan.HasBlockingChanges);
+        Assert.All(plan.Changes, change =>
+        {
+            Assert.Equal(SchemaChangeKind.RelaxColumnNullability, change.Kind);
+            Assert.True(change.IsAutomatic);
+        });
+        Assert.Equal(
+            ["optionalcode", "ownerid", "ownerid_type", "requiredcode"],
+            plan.Changes.Select(change => change.ObjectName).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void Plan_DoesNotRelaxNullableDestinationColumns()
+    {
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.Guid, false),
+                new("name", SourceType.String, true, 100),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        Assert.Empty(SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy()).Changes);
+    }
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>

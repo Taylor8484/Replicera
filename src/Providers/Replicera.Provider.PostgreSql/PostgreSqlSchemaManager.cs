@@ -89,6 +89,7 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
                 SchemaChangeKind.RenameColumn => BuildRenameColumn(source, change.ObjectName, change.NewObjectName!),
                 SchemaChangeKind.DropColumn => BuildDropColumn(source, change.ObjectName),
                 SchemaChangeKind.ExpandColumn => BuildAlterColumn(source, change.ObjectName),
+                SchemaChangeKind.RelaxColumnNullability => BuildRelaxNullability(source, change.ObjectName),
                 _ => null
             };
             if (sql is not null)
@@ -339,6 +340,9 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
         var column = table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
         return $"ALTER TABLE {PostgreSqlIdentifier.Qualified("public", table.DestinationName)} ALTER COLUMN {PostgreSqlIdentifier.Quote(PostgreSqlIdentifier.Normalize(column.LogicalName))} TYPE {PostgreSqlTypeMapper.Map(column).Declaration};";
     }
+
+    internal static string BuildRelaxNullability(TableDefinition table, string columnName) =>
+        $"ALTER TABLE {PostgreSqlIdentifier.Qualified("public", table.DestinationName)} ALTER COLUMN {PostgreSqlIdentifier.Quote(PostgreSqlIdentifier.Normalize(columnName))} DROP NOT NULL;";
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch
     {

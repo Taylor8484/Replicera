@@ -226,6 +226,50 @@ public sealed class OracleProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "OracleIntegration")]
+    public async Task RequiredSourceColumn_IsRelaxedAndAcceptsNullValues()
+    {
+        var connectionString = ConnectionString();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        var suffix = UniqueSuffix();
+        var job = $"job_{suffix}";
+        var table = AccountsTable($"account_{suffix}", includeDescription: true);
+        var tableName = OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName));
+        await PrepareTableAsync(connectionString, job, table);
+        await using (var connection = new OracleConnection(connectionString))
+        {
+            await connection.OpenAsync(TestCancellationToken);
+            await using var legacy = connection.CreateCommand();
+            legacy.CommandText = $"ALTER TABLE {tableName} MODIFY (\"DESCRIPTION\" NOT NULL)";
+            _ = await legacy.ExecuteNonQueryAsync(TestCancellationToken);
+        }
+
+        var schema = new OracleSchemaManager(connectionString);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new());
+        var relax = Assert.Single(plan.Changes);
+        Assert.Equal(SchemaChangeKind.RelaxColumnNullability, relax.Kind);
+        await schema.ApplySchemaPlanAsync(job, table, plan, TestCancellationToken);
+        Assert.Empty(SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new()).Changes);
+
+        var writer = new OracleDestinationWriter(connectionString);
+        await using (var session = await writer.BeginInitialSyncAsync(job, table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "No description", 1)), TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        await using var verify = new OracleConnection(connectionString);
+        await verify.OpenAsync(TestCancellationToken);
+        await using var command = verify.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {tableName} WHERE \"DESCRIPTION\" IS NULL";
+        Assert.Equal(1, Convert.ToInt32(await command.ExecuteScalarAsync(TestCancellationToken), System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    [Trait("Category", "OracleIntegration")]
     public async Task InterruptedAndConcurrentSessions_PreserveCommittedStateAndEnforceLock()
     {
         var connectionString = ConnectionString();

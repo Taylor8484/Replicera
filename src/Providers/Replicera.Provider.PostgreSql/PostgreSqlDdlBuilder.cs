@@ -15,9 +15,9 @@ public static class PostgreSqlDdlBuilder
             var type = physicalColumn.IsLookupTarget
                 ? "character varying(128)"
                 : PostgreSqlTypeMapper.Map(physicalColumn.Source).Declaration;
-            var nullability = physicalColumn.Source.IsNullable && !physicalColumn.Source.IsPrimaryKey
-                ? "NULL"
-                : "NOT NULL";
+            var nullability = physicalColumn.Source.IsPrimaryKey && !physicalColumn.IsLookupTarget
+                ? "NOT NULL"
+                : "NULL";
             definitions.Add($"    {PostgreSqlIdentifier.Quote(physicalColumn.Name)} {type} {nullability}");
         }
 

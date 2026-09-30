@@ -87,6 +87,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
                 SchemaChangeKind.RenameColumn => [BuildRenameColumn(source, change.ObjectName, change.NewObjectName!)],
                 SchemaChangeKind.DropColumn => [BuildDropColumn(source, change.ObjectName)],
                 SchemaChangeKind.ExpandColumn => BuildExpandColumn(source, change.ObjectName),
+                SchemaChangeKind.RelaxColumnNullability => [BuildRelaxNullability(source, change.ObjectName)],
                 _ => []
             };
             foreach (var sql in statements)
@@ -433,6 +434,9 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
             $"ALTER TABLE {tableName} RENAME COLUMN {copyName} TO {columnName}"
         ];
     }
+
+    internal static string BuildRelaxNullability(TableDefinition table, string columnName) =>
+        $"ALTER TABLE {OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName))} MODIFY ({OracleIdentifier.Quote(OracleIdentifier.Normalize(columnName))} NULL)";
 
     private static bool RequiresLobConversion(TableDefinition table, string logicalName) =>
         IsLob(OracleTypeMapper.Map(FindColumn(table, logicalName)).Declaration);

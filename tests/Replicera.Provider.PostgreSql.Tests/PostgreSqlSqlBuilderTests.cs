@@ -16,6 +16,27 @@ public sealed class PostgreSqlSqlBuilderTests
     }
 
     [Fact]
+    public void BuildCreateTable_AllowsNullsInRequiredSourceColumns()
+    {
+        var table = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = false, MaxLength = 100 }
+            ]);
+
+        var sql = PostgreSqlDdlBuilder.BuildCreateTable(table);
+
+        Assert.Contains("\"accountid\" uuid NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("\"name\" character varying(100) NULL", sql, StringComparison.Ordinal);
+        Assert.Equal(
+            "ALTER TABLE \"public\".\"account\" ALTER COLUMN \"name\" DROP NOT NULL;",
+            PostgreSqlSchemaManager.BuildRelaxNullability(table, "name"));
+    }
+
+    [Fact]
     public void BuildApplyStaging_UsesConflictUpsertAndPhysicalDelete()
     {
         var sql = PostgreSqlDmlBuilder.BuildApplyStaging(Table(), "replicera_stage_123");
