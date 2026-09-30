@@ -16,7 +16,7 @@ internal sealed class SqlServerTableLock(SqlConnection connection, string resour
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            var resource = $"replicera:{jobName}:{logicalName}";
+            var resource = SqlServerLockResource.For(jobName, logicalName);
             await using var command = connection.CreateCommand();
             command.CommandText = """
                 DECLARE @result int;

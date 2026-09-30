@@ -37,4 +37,17 @@ public sealed class SqlServerIdentifierTests
     {
         Assert.Equal("[odd]]name]", SqlServerIdentifier.Quote("odd]name"));
     }
+
+    [Fact]
+    public void LockResource_KeepsShortNamesAndHashesNamesBeyondTheApplockLimit()
+    {
+        Assert.Equal("replicera:job:account", SqlServerLockResource.For("job", "account"));
+        var job = new string('j', 300);
+        var account = SqlServerLockResource.For(job, "account");
+        var contact = SqlServerLockResource.For(job, "contact");
+        Assert.NotEqual(account, contact);
+        Assert.True(account.Length <= 255);
+        Assert.StartsWith("replicera:sha256:", account, StringComparison.Ordinal);
+        Assert.Equal(account, SqlServerLockResource.For(job, "account"));
+    }
 }

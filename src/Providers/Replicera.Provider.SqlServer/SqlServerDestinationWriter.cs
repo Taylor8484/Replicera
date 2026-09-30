@@ -173,7 +173,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                 @LockTimeout = 0;
             SELECT @result;
             """;
-        _ = command.Parameters.AddWithValue("@resource", $"replicera:{jobName}:{logicalName}");
+        _ = command.Parameters.AddWithValue("@resource", SqlServerLockResource.For(jobName, logicalName));
         var result = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
         if (result < 0)
         {

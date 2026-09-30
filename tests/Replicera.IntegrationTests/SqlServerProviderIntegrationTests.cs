@@ -728,6 +728,24 @@ public sealed class SqlServerProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task TableLock_DistinguishesLongJobNames()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        var provider = new SqlServerProvider();
+        var job = new string('j', 300);
+        await using var account = await provider.AcquireTableLockAsync(database.ConnectionString, job, "account", TestCancellationToken);
+        await using var contact = await provider.AcquireTableLockAsync(database.ConnectionString, job, "contact", TestCancellationToken);
+        await Assert.ThrowsAsync<SynchronizationAlreadyRunningException>(async () =>
+            await provider.AcquireTableLockAsync(database.ConnectionString, job, "account", TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();
