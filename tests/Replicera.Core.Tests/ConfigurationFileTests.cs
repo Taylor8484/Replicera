@@ -72,6 +72,31 @@ public sealed class ConfigurationFileTests : IDisposable
         Assert.Contains("Column rename mappings are required.", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task CreateAsync_ReportsMissingDirectoryAsConfigurationError()
+    {
+        var path = Path.Combine(directory.FullName, "missing", "replicera.json");
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => ConfigurationFile.CreateAsync(path, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Configuration, exception.Category);
+        Assert.Contains("Could not create configuration", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreateAsync_DoesNotOverwriteExistingFile()
+    {
+        var path = Path.Combine(directory.FullName, "replicera.json");
+        await File.WriteAllTextAsync(path, "existing");
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => ConfigurationFile.CreateAsync(path, CancellationToken.None));
+
+        Assert.Contains("already exists", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("existing", await File.ReadAllTextAsync(path));
+    }
+
     private async Task<string> WriteAsync(JsonNode json)
     {
         var path = Path.Combine(directory.FullName, $"{Guid.NewGuid():N}.json");

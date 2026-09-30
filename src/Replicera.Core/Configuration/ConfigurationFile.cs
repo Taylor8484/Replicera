@@ -69,6 +69,13 @@ public static class ConfigurationFile
                 $"Configuration file '{path}' already exists.",
                 exception);
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new RepliceraException(
+                ErrorCategory.Configuration,
+                $"Could not create configuration '{path}': {exception.Message}",
+                exception);
+        }
     }
 
     public static async Task SaveAsync(
