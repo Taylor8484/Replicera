@@ -56,7 +56,8 @@ public sealed class DataverseServiceRetryTests
                 return Task.CompletedTask;
             },
             maxRetryCount: 2,
-            retryPause: TimeSpan.FromSeconds(2));
+            retryPause: TimeSpan.FromSeconds(2),
+            jitter: () => 0.5);
 
         var exception = await Assert.ThrowsAsync<RepliceraException>(
             () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
@@ -278,6 +279,62 @@ public sealed class DataverseServiceRetryTests
             () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
 
         Assert.Equal("not a Dataverse failure", exception.Message);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CapsRetryAfterAndBackoff()
+    {
+        var delays = new List<TimeSpan>();
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    var fault = Fault(429);
+                    fault.ErrorDetails["Retry-After"] = TimeSpan.FromHours(6);
+                    throw new FaultException<OrganizationServiceFault>(fault);
+                }
+
+                throw new FaultException<OrganizationServiceFault>(Fault(503));
+            },
+            (duration, _) =>
+            {
+                delays.Add(duration);
+                return Task.CompletedTask;
+            },
+            maxRetryCount: 2,
+            retryPause: TimeSpan.FromSeconds(50),
+            jitter: () => 1.0);
+
+        _ = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal([DataverseService.MaximumRetryAfter, DataverseService.MaximumBackoff], delays);
+    }
+
+    [Theory]
+    [InlineData(0.0, 1.6)]
+    [InlineData(1.0, 2.4)]
+    public async Task ExecuteAsync_AppliesJitterToExponentialBackoff(double jitter, double expectedSeconds)
+    {
+        var delays = new List<TimeSpan>();
+        var service = new DataverseService(
+            (_, _) => throw new FaultException<OrganizationServiceFault>(Fault(503)),
+            (duration, _) =>
+            {
+                delays.Add(duration);
+                return Task.CompletedTask;
+            },
+            maxRetryCount: 1,
+            retryPause: TimeSpan.FromSeconds(2),
+            jitter: () => jitter);
+
+        _ = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), Assert.Single(delays));
     }
 
     private static OrganizationServiceFault Fault(int statusCode)

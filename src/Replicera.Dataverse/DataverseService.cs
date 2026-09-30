@@ -19,11 +19,14 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
 {
     private const int DefaultMaxRetryCount = 3;
     private static readonly TimeSpan DefaultRetryPause = TimeSpan.FromSeconds(2);
+    internal static readonly TimeSpan MaximumBackoff = TimeSpan.FromMinutes(1);
+    internal static readonly TimeSpan MaximumRetryAfter = TimeSpan.FromMinutes(5);
     private readonly ServiceClient? client;
     private readonly Func<OrganizationRequest, CancellationToken, Task<OrganizationResponse>> execute;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly int maxRetryCount;
     private readonly TimeSpan retryPause;
+    private readonly Func<double> jitter;
 
     public DataverseService(ServiceClient client)
         : this(client.ExecuteAsync, Task.Delay, DefaultMaxRetryCount, DefaultRetryPause)
@@ -35,12 +38,14 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
         Func<OrganizationRequest, CancellationToken, Task<OrganizationResponse>> execute,
         Func<TimeSpan, CancellationToken, Task> delay,
         int maxRetryCount = DefaultMaxRetryCount,
-        TimeSpan? retryPause = null)
+        TimeSpan? retryPause = null,
+        Func<double>? jitter = null)
     {
         this.execute = execute;
         this.delay = delay;
         this.maxRetryCount = maxRetryCount;
         this.retryPause = retryPause ?? DefaultRetryPause;
+        this.jitter = jitter ?? Random.Shared.NextDouble;
     }
 
     public async Task<OrganizationResponse> ExecuteAsync(
@@ -61,10 +66,23 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
                     throw failure.Exception;
                 }
 
-                var retryAfter = failure.RetryAfter ?? TimeSpan.FromTicks(retryPause.Ticks * (1L << retry));
-                await delay(retryAfter, cancellationToken).ConfigureAwait(false);
+                await delay(RetryDelay(failure.RetryAfter, retry), cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    // Service-protection limits specify their own wait, which is honored up to a ceiling so that
+    // a malformed value cannot stall a run. Other retries back off exponentially with jitter so
+    // that concurrent jobs do not retry in lockstep.
+    private TimeSpan RetryDelay(TimeSpan? retryAfter, int retry)
+    {
+        if (retryAfter is { } requested)
+        {
+            return requested < MaximumRetryAfter ? requested : MaximumRetryAfter;
+        }
+
+        var exponential = retryPause.Ticks * Math.Pow(2, retry) * (0.8 + (0.4 * jitter()));
+        return exponential < MaximumBackoff.Ticks ? TimeSpan.FromTicks((long)exponential) : MaximumBackoff;
     }
 
     private static Failure? ClassifyFailure(OrganizationRequest request, Exception exception)
