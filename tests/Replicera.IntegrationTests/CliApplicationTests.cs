@@ -319,7 +319,7 @@ public sealed class CliApplicationTests
     }
 
     [Fact]
-    public async Task ScheduleCommands_SetShowAndDisableJobSchedule()
+    public async Task ScheduleCommands_SetShowDisableAndEnableJobSchedule()
     {
         var directory = Directory.CreateTempSubdirectory("replicera-test-");
         var path = Path.Combine(directory.FullName, "replicera.json");
@@ -357,6 +357,17 @@ public sealed class CliApplicationTests
             Assert.NotNull(schedule);
             Assert.False(schedule.Enabled);
             Assert.Equal(TimeSpan.FromSeconds(30), schedule.Interval);
+
+            Assert.Equal(0, await CliApplication.RunAsync(
+                ["schedule", "enable", "--job", "job", "--config", path],
+                TextWriter.Null,
+                TextWriter.Null,
+                CancellationToken.None));
+            var enabled = Assert.Single((await ConfigurationFile.LoadAsync(path, CancellationToken.None)).Jobs).Schedule;
+            Assert.NotNull(enabled);
+            Assert.True(enabled.Enabled);
+            Assert.False(enabled.RunOnStart);
+            Assert.Equal(TimeSpan.FromSeconds(30), enabled.Interval);
         }
         finally
         {
