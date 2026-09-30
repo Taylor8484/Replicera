@@ -21,7 +21,7 @@ public static class SqlServerDdlBuilder
             var sqlType = physicalColumn.IsLookupTarget
                 ? "nvarchar(128)"
                 : SqlServerTypeMapper.Map(column).Declaration;
-            var nullability = column.IsNullable && !column.IsPrimaryKey ? "NULL" : "NOT NULL";
+            var nullability = column.IsPrimaryKey && !physicalColumn.IsLookupTarget ? "NOT NULL" : "NULL";
             definitions.Add($"    {SqlServerIdentifier.Quote(physicalColumn.Name)} {sqlType} {nullability}");
         }
 

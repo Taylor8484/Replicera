@@ -57,4 +57,43 @@ public sealed class SqlServerDdlBuilderTests
         Assert.Contains("[annotationid] uniqueidentifier NOT NULL", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("documentbody", sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void BuildCreateTable_AllowsNullsInRequiredSourceColumns()
+    {
+        var sql = SqlServerDdlBuilder.BuildCreateTable(RequiredColumnTable());
+
+        Assert.Contains("[accountid] uniqueidentifier NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("[name] nvarchar(100) NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("[ownerid] uniqueidentifier NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("[ownerid_type] nvarchar(128) NULL", sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("[name] nvarchar(100) NOT NULL", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildRelaxNullability_KeepsColumnTypeAndAllowsNulls()
+    {
+        Assert.Equal(
+            "ALTER TABLE [dbo].[account] ALTER COLUMN [name] nvarchar(100) NULL;",
+            SqlServerSchemaManager.BuildRelaxNullability(RequiredColumnTable(), "name"));
+        Assert.Equal(
+            "ALTER TABLE [dbo].[account] ALTER COLUMN [ownerid_type] nvarchar(128) NULL;",
+            SqlServerSchemaManager.BuildRelaxNullability(RequiredColumnTable(), "ownerid_type"));
+    }
+
+    private static TableDefinition RequiredColumnTable() => new(
+        "account",
+        "accounts",
+        "account",
+        [
+            new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+            new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = false, MaxLength = 100 },
+            new ColumnDefinition
+            {
+                LogicalName = "ownerid",
+                SourceType = SourceType.Lookup,
+                IsNullable = false,
+                LookupTargets = ["systemuser", "team"]
+            }
+        ]);
 }

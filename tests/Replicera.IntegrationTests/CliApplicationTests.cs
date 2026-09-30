@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Replicera.Cli;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 
 namespace Replicera.IntegrationTests;
 
@@ -72,6 +73,122 @@ public sealed class CliApplicationTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal("0.1.0", output.ToString().Trim());
+    }
+
+    [Theory]
+    [InlineData("sync", "--help")]
+    [InlineData("worker", "--job", "nightly", "-h")]
+    [InlineData("init", "--help")]
+    [InlineData("tables", "add", "account", "--help")]
+    public async Task Help_AnywhereInArgumentsPrintsUsageWithoutRunningCommand(params string[] arguments)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"replicera-help-{Guid.NewGuid():N}.json");
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync([.. arguments, "--config", path], output, error, CancellationToken.None);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Usage:", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(string.Empty, error.ToString());
+        Assert.False(File.Exists(path));
+    }
+
+    [Theory]
+    [InlineData("Unknown option '--tabel'", "sync", "--tabel", "contact", "--full")]
+    [InlineData("Unknown option '--force'", "init", "--force")]
+    [InlineData("Unknown option '--interval'", "worker", "--interval", "00:05:00")]
+    [InlineData("'--job' was specified more than once", "sync", "--job", "a", "--job", "b")]
+    [InlineData("'--full' was specified more than once", "sync", "--full", "--full")]
+    [InlineData("Unexpected argument 'contact'", "sync", "contact")]
+    [InlineData("requires exactly 1 table logical name", "inspect", "--json")]
+    [InlineData("requires exactly 1 table logical name", "tables", "add", "account", "contact")]
+    [InlineData("'--job' requires a value", "status", "--job")]
+    public async Task InvalidArguments_AreRejectedBeforeCommandRuns(string expectedError, params string[] arguments)
+    {
+        using var error = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync(
+            [.. arguments, "--config", Path.Combine(Path.GetTempPath(), $"replicera-missing-{Guid.NewGuid():N}.json")],
+            TextWriter.Null,
+            error,
+            CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains(expectedError, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BootstrapPermissions_RequiresExplicitTableScope()
+    {
+        var tablesFile = Path.Combine(Path.GetTempPath(), $"replicera-tables-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(tablesFile, "[\"account\"]");
+        try
+        {
+            using var missingScopeError = new StringWriter();
+            var missingScopeExit = await CliApplication.RunAsync(
+                ["source", "bootstrap-permissions", "--name", "dev"],
+                TextWriter.Null,
+                missingScopeError,
+                CancellationToken.None);
+            using var bothScopesError = new StringWriter();
+            var bothScopesExit = await CliApplication.RunAsync(
+                ["source", "bootstrap-permissions", "--tables-file", tablesFile, "--all-tables"],
+                TextWriter.Null,
+                bothScopesError,
+                CancellationToken.None);
+
+            Assert.Equal(2, missingScopeExit);
+            Assert.Contains("--tables-file", missingScopeError.ToString(), StringComparison.Ordinal);
+            Assert.Contains("--all-tables", missingScopeError.ToString(), StringComparison.Ordinal);
+            Assert.Equal(2, bothScopesExit);
+            Assert.Contains("not both", bothScopesError.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(tablesFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("[\"account\", \"contact\", \"Account\"]", null)]
+    [InlineData("[]", "at least one table")]
+    [InlineData("[\"account\", \"\"]", "at least one table")]
+    [InlineData("{\"tables\": [\"account\"]}", "JSON array")]
+    [InlineData("not json", "JSON array")]
+    public async Task PermissionTablesFile_AcceptsOnlyJsonArrayOfTableNames(string content, string? expectedError)
+    {
+        var tablesFile = Path.Combine(Path.GetTempPath(), $"replicera-tables-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(tablesFile, content);
+        try
+        {
+            if (expectedError is null)
+            {
+                var scope = await RuntimeCommands.LoadPermissionTablesAsync(tablesFile, CancellationToken.None);
+                Assert.Equal(["account", "contact"], scope.Tables);
+                return;
+            }
+
+            var error = await Assert.ThrowsAsync<RepliceraException>(() =>
+                RuntimeCommands.LoadPermissionTablesAsync(tablesFile, CancellationToken.None));
+            Assert.Equal(ErrorCategory.Configuration, error.Category);
+            Assert.Contains(expectedError, error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(tablesFile);
+        }
+    }
+
+    [Fact]
+    public async Task UnknownCommand_ReturnsInvalidInput()
+    {
+        using var error = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync(["synchronize"], TextWriter.Null, error, CancellationToken.None);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("unknown command", error.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -161,7 +278,7 @@ public sealed class CliApplicationTests
                 TextWriter.Null,
                 CancellationToken.None);
             var removeExit = await CliApplication.RunAsync(
-                ["tables", "remove", "contact", "--job", "development", "--config", path],
+                ["tables", "remove", "--job", "development", "contact", "--config", path],
                 TextWriter.Null,
                 TextWriter.Null,
                 CancellationToken.None);

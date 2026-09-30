@@ -39,10 +39,16 @@ public static class CliApplication
                 return (int)ExitCode.Success;
             }
 
-            if (arguments.Count == 0 || arguments[0] is "--help" or "-h" or "help")
+            if (CommandSyntax.IsHelpRequest(arguments))
             {
                 await output.WriteLineAsync(HelpText).ConfigureAwait(false);
                 return (int)ExitCode.Success;
+            }
+
+            var positional = CommandSyntax.Validate(arguments);
+            if (positional is null)
+            {
+                return await InvalidCommandAsync(arguments, error).ConfigureAwait(false);
             }
 
             var configPath = GetOption(arguments, "--config") ?? "replicera.json";
@@ -56,6 +62,8 @@ public static class CliApplication
                     configPath,
                     GetOption(arguments, "--name"),
                     GetOption(arguments, "--role-name"),
+                    GetOption(arguments, "--tables-file"),
+                    HasFlag(arguments, "--all-tables"),
                     output,
                     structuredOutput,
                     cancellationToken).ConfigureAwait(false),
@@ -66,13 +74,13 @@ public static class CliApplication
                 "schedule" when HasSubcommand(arguments, "set") => await SetScheduleAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
                 "schedule" when HasSubcommand(arguments, "show") => await ShowScheduleAsync(arguments, configPath, output, structuredOutput, cancellationToken).ConfigureAwait(false),
                 "schedule" when HasSubcommand(arguments, "disable") => await DisableScheduleAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
-                "tables" when HasSubcommand(arguments, "add") && arguments.Count > 2 => await AddTableAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
-                "tables" when HasSubcommand(arguments, "remove") && arguments.Count > 2 => await RemoveTableAsync(arguments, configPath, output, cancellationToken).ConfigureAwait(false),
+                "tables" when HasSubcommand(arguments, "add") => await AddTableAsync(arguments, positional[0], configPath, output, cancellationToken).ConfigureAwait(false),
+                "tables" when HasSubcommand(arguments, "remove") => await RemoveTableAsync(arguments, positional[0], configPath, output, cancellationToken).ConfigureAwait(false),
                 "tables" when HasSubcommand(arguments, "list") => await ListConfiguredTablesAsync(configPath, output, cancellationToken).ConfigureAwait(false),
-                "inspect" when arguments.Count > 1 => await RuntimeCommands.InspectAsync(
+                "inspect" => await RuntimeCommands.InspectAsync(
                     configPath,
                     GetOption(arguments, "--job"),
-                    arguments[1],
+                    positional[0],
                     output,
                     structuredOutput,
                     cancellationToken).ConfigureAwait(false),
@@ -519,20 +527,23 @@ public static class CliApplication
 
     private static Task<int> AddTableAsync(
         IReadOnlyList<string> arguments,
+        string table,
         string path,
         TextWriter output,
         CancellationToken cancellationToken) =>
-        ChangeTableAsync(arguments, path, output, true, cancellationToken);
+        ChangeTableAsync(arguments, table, path, output, true, cancellationToken);
 
     private static Task<int> RemoveTableAsync(
         IReadOnlyList<string> arguments,
+        string table,
         string path,
         TextWriter output,
         CancellationToken cancellationToken) =>
-        ChangeTableAsync(arguments, path, output, false, cancellationToken);
+        ChangeTableAsync(arguments, table, path, output, false, cancellationToken);
 
     private static async Task<int> ChangeTableAsync(
         IReadOnlyList<string> arguments,
+        string table,
         string path,
         TextWriter output,
         bool add,
@@ -540,8 +551,7 @@ public static class CliApplication
     {
         var configuration = await ConfigurationFile.LoadAsync(path, cancellationToken).ConfigureAwait(false);
         var selectedJob = SelectJob(configuration, GetOption(arguments, "--job"));
-        var table = arguments[2];
-        if (string.IsNullOrWhiteSpace(table) || table.StartsWith("--", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(table))
         {
             throw new RepliceraException(ErrorCategory.Configuration, "A table logical name is required.");
         }
@@ -719,10 +729,12 @@ public static class CliApplication
         Replicera - mirror Microsoft Dataverse tables to relational databases
 
         Usage:
+          replicera --help | -h
+          replicera --version
           replicera init [--config <path>]
           replicera source add [--interactive] --name <name> --url <url> --tenant-id <guid> --client-id <guid> --secret-env <variable> [--auth client-secret|certificate] [--certificate-password-env <variable>] [--config <path>]
           replicera source list [--config <path>]
-          replicera source bootstrap-permissions [--name <source>] [--role-name <role>] [--json] [--config <path>]
+          replicera source bootstrap-permissions (--tables-file <path>|--all-tables) [--name <source>] [--role-name <role>] [--json] [--config <path>]
           replicera destination add [--interactive] --name <name> --connection-env <variable> [--provider sqlserver|postgresql|oracle] [--config <path>]
           replicera destination list [--config <path>]
           replicera job add [--interactive] --name <name> --source <source> --destination <destination> --table <table> [--table <table>] [--batch-size <count>] [--mode complete|no-data-loss|reload] [--config <path>]
@@ -737,6 +749,8 @@ public static class CliApplication
           replicera sync [--job <name>] [--table <table>] [--full] [--json] [--verbose] [--log-json] [--config <path>]
           replicera worker [--job <name>] [--json] [--verbose] [--log-json] [--config <path>]
           replicera status [--job <name>] [--json] [--config <path>]
+
+        Unknown or repeated options are rejected. Pass --help anywhere to show this text without running a command.
         """;
 
     private static string ProductVersion =>

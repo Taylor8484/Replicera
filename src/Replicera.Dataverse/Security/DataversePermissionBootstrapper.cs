@@ -3,6 +3,7 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
+using Replicera.Core.Errors;
 
 namespace Replicera.Dataverse.Security;
 
@@ -14,27 +15,16 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
 
     public async Task<PermissionBootstrapResult> ApplyAsync(
         string roleName,
+        PermissionScope scope,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(roleName);
+        ArgumentNullException.ThrowIfNull(scope);
         var who = (WhoAmIResponse)await service.ExecuteAsync(
             new WhoAmIRequest(), cancellationToken).ConfigureAwait(false);
-        var metadata = (RetrieveAllEntitiesResponse)await service.ExecuteAsync(
-            new RetrieveAllEntitiesRequest
-            {
-                EntityFilters = EntityFilters.Entity | EntityFilters.Privileges,
-                RetrieveAsIfPublished = false
-            }, cancellationToken).ConfigureAwait(false);
-        var reads = metadata.EntityMetadata
-            .SelectMany(table => table.Privileges ?? [])
-            .Where(privilege => privilege.PrivilegeType == PrivilegeType.Read && privilege.CanBeGlobal)
-            .DistinctBy(privilege => privilege.PrivilegeId)
-            .OrderBy(privilege => privilege.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (reads.Length == 0)
-        {
-            throw new InvalidOperationException("Dataverse returned no organization-level table Read privileges; the reader role was not changed.");
-        }
+        var reads = scope.IsAllTables
+            ? await GetAllTableReadPrivilegesAsync(cancellationToken).ConfigureAwait(false)
+            : await GetTableReadPrivilegesAsync(scope.Tables!, cancellationToken).ConfigureAwait(false);
 
         var role = await FindRoleAsync(roleName, who.BusinessUnitId, cancellationToken).ConfigureAwait(false);
         var created = role is null;
@@ -70,8 +60,91 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             await AssignAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
         }
 
-        return new PermissionBootstrapResult(roleName, roleId, reads.Length, created, !assigned, !customizerAssigned);
+        return new PermissionBootstrapResult(
+            roleName,
+            roleId,
+            reads.Length,
+            created,
+            !assigned,
+            !customizerAssigned,
+            scope.IsAllTables,
+            scope.Tables ?? []);
     }
+
+    private async Task<SecurityPrivilegeMetadata[]> GetAllTableReadPrivilegesAsync(CancellationToken cancellationToken)
+    {
+        var metadata = (RetrieveAllEntitiesResponse)await service.ExecuteAsync(
+            new RetrieveAllEntitiesRequest
+            {
+                EntityFilters = EntityFilters.Entity | EntityFilters.Privileges,
+                RetrieveAsIfPublished = false
+            }, cancellationToken).ConfigureAwait(false);
+        var reads = metadata.EntityMetadata
+            .SelectMany(table => table.Privileges ?? [])
+            .Where(IsGlobalRead)
+            .DistinctBy(privilege => privilege.PrivilegeId)
+            .OrderBy(privilege => privilege.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return reads.Length == 0
+            ? throw new InvalidOperationException("Dataverse returned no organization-level table Read privileges; the reader role was not changed.")
+            : reads;
+    }
+
+    private async Task<SecurityPrivilegeMetadata[]> GetTableReadPrivilegesAsync(
+        IReadOnlyList<string> tables,
+        CancellationToken cancellationToken)
+    {
+        var reads = new List<SecurityPrivilegeMetadata>();
+        var missing = new List<string>();
+        var withoutRead = new List<string>();
+        foreach (var table in tables)
+        {
+            EntityMetadata metadata;
+            try
+            {
+                metadata = ((RetrieveEntityResponse)await service.ExecuteAsync(
+                    new RetrieveEntityRequest
+                    {
+                        LogicalName = table,
+                        EntityFilters = EntityFilters.Entity | EntityFilters.Privileges,
+                        RetrieveAsIfPublished = false
+                    }, cancellationToken).ConfigureAwait(false)).EntityMetadata;
+            }
+            catch (RepliceraException exception) when (exception.Category == ErrorCategory.SourceMetadataNotFound)
+            {
+                missing.Add(table);
+                continue;
+            }
+
+            var read = (metadata.Privileges ?? []).FirstOrDefault(IsGlobalRead);
+            if (read is null)
+            {
+                withoutRead.Add(table);
+                continue;
+            }
+
+            reads.Add(read);
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new RepliceraException(
+                ErrorCategory.SourceMetadataNotFound,
+                $"Dataverse tables were not found: {string.Join(", ", missing)}. The reader role was not changed.");
+        }
+
+        if (withoutRead.Count > 0)
+        {
+            throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                $"Dataverse tables do not support organization-level Read: {string.Join(", ", withoutRead)}. The reader role was not changed.");
+        }
+
+        return [.. reads.DistinctBy(privilege => privilege.PrivilegeId)];
+    }
+
+    private static bool IsGlobalRead(SecurityPrivilegeMetadata privilege) =>
+        privilege.PrivilegeType == PrivilegeType.Read && privilege.CanBeGlobal;
 
     private async Task<Entity?> FindRoleAsync(string roleName, Guid businessUnitId, CancellationToken cancellationToken)
     {
@@ -132,4 +205,35 @@ public sealed record PermissionBootstrapResult(
     int TableReadPrivileges,
     bool RoleCreated,
     bool RoleAssigned,
-    bool SystemCustomizerAssigned);
+    bool SystemCustomizerAssigned,
+    bool AllTables,
+    IReadOnlyList<string> Tables);
+
+/// <summary>
+/// Selects which tables receive organization-level Read in the reader role. Granting every
+/// table exposes all environment data to the pump identity and must be chosen explicitly.
+/// </summary>
+public sealed record PermissionScope
+{
+    private PermissionScope(IReadOnlyList<string>? tables) => Tables = tables;
+
+    public static PermissionScope AllTables { get; } = new((IReadOnlyList<string>?)null);
+
+    public IReadOnlyList<string>? Tables { get; }
+
+    public bool IsAllTables => Tables is null;
+
+    public static PermissionScope ForTables(IEnumerable<string> tables)
+    {
+        ArgumentNullException.ThrowIfNull(tables);
+        var names = tables
+            .Select(table => table?.Trim() ?? string.Empty)
+            .ToArray();
+        if (names.Length == 0 || names.Any(string.IsNullOrEmpty))
+        {
+            throw new ArgumentException("At least one table is required and table names must not be blank.", nameof(tables));
+        }
+
+        return new PermissionScope(names.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+}

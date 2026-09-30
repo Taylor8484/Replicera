@@ -29,7 +29,8 @@ public enum SchemaChangeKind
     ExpandColumn,
     SourceColumnRemoved,
     IncompatibleColumn,
-    OwnershipConflict
+    OwnershipConflict,
+    RelaxColumnNullability
 }
 
 public static class ManagedColumnNames

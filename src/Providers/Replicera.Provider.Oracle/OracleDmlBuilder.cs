@@ -69,6 +69,14 @@ public static class OracleDmlBuilder
             : $"DELETE FROM {target} target WHERE EXISTS (SELECT 1 FROM {staging} source WHERE source.{operation} = 'D' AND source.{key} = target.{key})";
     }
 
+    public static string BuildMarkAllSourceRemoved(TableDefinition table)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        var target = OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName));
+        var removed = Managed(ManagedColumnNames.SourceRemoveDate);
+        return $"UPDATE {target} SET {removed} = COALESCE({removed}, SYSTIMESTAMP)";
+    }
+
     public static string BuildClearStaging(string stagingTable) =>
         $"DELETE FROM {OracleIdentifier.Quote(OracleIdentifier.Normalize(stagingTable))}";
 

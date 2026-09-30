@@ -16,6 +16,27 @@ public sealed class OracleSqlBuilderTests
     }
 
     [Fact]
+    public void BuildCreateTable_AllowsNullsInRequiredSourceColumns()
+    {
+        var table = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = false, MaxLength = 100 }
+            ]);
+
+        var sql = OracleDdlBuilder.BuildCreateTable(table);
+
+        Assert.Contains("\"ACCOUNTID\" RAW(16) NOT NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("\"NAME\" NVARCHAR2(100) NULL", sql, StringComparison.Ordinal);
+        Assert.Equal(
+            "ALTER TABLE \"ACCOUNT\" MODIFY (\"NAME\" NULL)",
+            OracleSchemaManager.BuildRelaxNullability(table, "name"));
+    }
+
+    [Fact]
     public void BuildApplyStaging_UsesMergeAndPhysicalDelete()
     {
         var merge = OracleDmlBuilder.BuildApplyStaging(Table(), "REPLICERA_STAGE_123");
@@ -37,6 +58,48 @@ public sealed class OracleSqlBuilderTests
         Assert.Contains("\"DATE_SOURCE_REMOVE_DTE\" = NULL", merge, StringComparison.Ordinal);
         Assert.Contains("COALESCE(target.\"DATE_SOURCE_REMOVE_DTE\", SYSTIMESTAMP)", removal, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void BuildMarkAllSourceRemoved_UsesNormalizedManagedColumn()
+    {
+        var sql = OracleDmlBuilder.BuildMarkAllSourceRemoved(Table());
+
+        Assert.Equal(
+            "UPDATE \"ACCOUNT\" SET \"DATE_SOURCE_REMOVE_DTE\" = COALESCE(\"DATE_SOURCE_REMOVE_DTE\", SYSTIMESTAMP)",
+            sql);
+    }
+
+    [Fact]
+    public void BuildExpandColumn_ModifiesCharacterColumnWithinNvarchar2Limit()
+    {
+        var statement = Assert.Single(OracleSchemaManager.BuildExpandColumn(TextTable(2_000), "name"));
+
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" MODIFY (\"NAME\" NVARCHAR2(2000))", statement);
+    }
+
+    [Fact]
+    public void BuildExpandColumn_CopiesIntoNclobWhenCrossingNvarchar2Limit()
+    {
+        var statements = OracleSchemaManager.BuildExpandColumn(TextTable(4_000), "name");
+
+        Assert.Equal(5, statements.Count);
+        Assert.Contains("DROP COLUMN \"NAME_REPLICERA_LOB\"", statements[0], StringComparison.Ordinal);
+        Assert.Contains("SQLCODE <> -904", statements[0], StringComparison.Ordinal);
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" ADD (\"NAME_REPLICERA_LOB\" NCLOB NULL)", statements[1]);
+        Assert.Equal("UPDATE \"ACCOUNT\" SET \"NAME_REPLICERA_LOB\" = \"NAME\"", statements[2]);
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" DROP COLUMN \"NAME\"", statements[3]);
+        Assert.Equal("ALTER TABLE \"ACCOUNT\" RENAME COLUMN \"NAME_REPLICERA_LOB\" TO \"NAME\"", statements[4]);
+        Assert.DoesNotContain(statements, statement => statement.Contains("MODIFY", StringComparison.Ordinal));
+    }
+
+    private static TableDefinition TextTable(int maxLength) => new(
+        "account",
+        "accounts",
+        "account",
+        [
+            new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+            new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = maxLength }
+        ]);
 
     [Fact]
     public void BuildCreateStaging_AllowsSparseDeleteRecords()

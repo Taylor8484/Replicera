@@ -108,6 +108,7 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
                 SchemaChangeKind.RenameColumn => BuildRenameColumn(source, change.ObjectName, change.NewObjectName!),
                 SchemaChangeKind.DropColumn => BuildDropColumn(source, change.ObjectName),
                 SchemaChangeKind.ExpandColumn => BuildAlterColumn(source, change.ObjectName),
+                SchemaChangeKind.RelaxColumnNullability => BuildRelaxNullability(source, change.ObjectName),
                 _ => null
             };
             if (sql is null)
@@ -369,6 +370,19 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
         var column = table.Columns.Single(column => string.Equals(column.LogicalName, logicalName, StringComparison.OrdinalIgnoreCase));
         var type = SqlServerTypeMapper.Map(column).Declaration;
         return $"ALTER TABLE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} ALTER COLUMN {SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(column.LogicalName))} {type} NULL;";
+    }
+
+    internal static string BuildRelaxNullability(TableDefinition table, string columnName)
+    {
+        var column = SqlServerTableLayout.GetColumns(table)
+            .Single(column =>
+                string.Equals(column.Name, columnName, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(
+                    column.IsLookupTarget ? $"{column.Source.LogicalName}_type" : column.Source.LogicalName,
+                    columnName,
+                    StringComparison.OrdinalIgnoreCase));
+        var type = column.IsLookupTarget ? "nvarchar(128)" : SqlServerTypeMapper.Map(column.Source).Declaration;
+        return $"ALTER TABLE [dbo].{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table.DestinationName))} ALTER COLUMN {SqlServerIdentifier.Quote(column.Name)} {type} NULL;";
     }
 
     private static SourceType InferSourceType(string sqlType) => sqlType switch

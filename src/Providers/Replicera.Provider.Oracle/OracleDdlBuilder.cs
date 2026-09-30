@@ -14,9 +14,9 @@ public static class OracleDdlBuilder
             var type = physicalColumn.IsLookupTarget
                 ? "NVARCHAR2(128)"
                 : OracleTypeMapper.Map(physicalColumn.Source).Declaration;
-            var nullability = physicalColumn.Source.IsNullable && !physicalColumn.Source.IsPrimaryKey
-                ? "NULL"
-                : "NOT NULL";
+            var nullability = physicalColumn.Source.IsPrimaryKey && !physicalColumn.IsLookupTarget
+                ? "NOT NULL"
+                : "NULL";
             definitions.Add($"    {OracleIdentifier.Quote(physicalColumn.Name)} {type} {nullability}");
         }
 
