@@ -11,7 +11,15 @@ public sealed class PostgreSqlMetadataStore(string connectionString)
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = new NpgsqlCommand($"{MigrationOne}{Environment.NewLine}{MigrationTwo}", connection, transaction);
+        // Concurrent first runs would otherwise race on CREATE ... IF NOT EXISTS, which is not atomic.
+        await using var command = new NpgsqlCommand(
+            $"""
+            SELECT pg_advisory_xact_lock(hashtextextended('replicera:metadata', 0));
+            {MigrationOne}
+            {MigrationTwo}
+            """,
+            connection,
+            transaction);
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }

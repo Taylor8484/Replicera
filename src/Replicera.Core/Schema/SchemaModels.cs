@@ -15,7 +15,8 @@ public sealed record DestinationTable(
     string Schema,
     string Name,
     IReadOnlyList<DestinationColumn> Columns,
-    bool IsManaged);
+    bool IsManaged,
+    string? OwnerJob = null);
 
 public enum SchemaChangeKind
 {

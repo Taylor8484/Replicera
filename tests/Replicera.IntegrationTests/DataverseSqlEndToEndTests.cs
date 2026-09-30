@@ -33,7 +33,7 @@ public sealed class DataverseSqlEndToEndTests
         var metadata = new SqlServerMetadataStore(database.ConnectionString);
         await metadata.EnsureCreatedAsync(CancellationToken.None);
         var schema = new SqlServerSchemaManager(database.ConnectionString);
-        var current = await schema.ReadTableAsync(table, CancellationToken.None);
+        var current = await schema.ReadTableAsync("end-to-end", table, CancellationToken.None);
         var plan = SchemaPlanner.Plan(table, current, new SchemaPolicy());
         Assert.False(plan.HasBlockingChanges);
         await schema.ApplySchemaPlanAsync("end-to-end", table, plan, CancellationToken.None);

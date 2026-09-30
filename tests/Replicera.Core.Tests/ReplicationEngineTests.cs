@@ -129,6 +129,56 @@ public sealed class ReplicationEngineTests
     }
 
     [Fact]
+    public async Task SyncAsync_RefusesToCommitWhenTableLockWasLost()
+    {
+        var session = new FakeSession();
+        var state = new FakeStateStore(null);
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, false, "new-token")]),
+            new FakeDestination(session),
+            state);
+
+        var exception = await Assert.ThrowsAsync<TableLockLostException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None, tableLock: new FakeTableLock(held: false)));
+
+        Assert.Equal(ErrorCategory.Synchronization, exception.Category);
+        Assert.Null(session.CommittedCheckpoint);
+        Assert.True(session.Disposed);
+        Assert.Equal(TableState.Failed, state.MarkedState);
+    }
+
+    [Fact]
+    public async Task SyncAsync_CommitsAfterConfirmingTableLock()
+    {
+        var session = new FakeSession();
+        var tableLock = new FakeTableLock(held: true);
+        var engine = new ReplicationEngine(
+            new FakeSource([Page(1, false, "new-token")]),
+            new FakeDestination(session),
+            new FakeStateStore(null));
+
+        await engine.SyncAsync("job", Table(), 100, CancellationToken.None, tableLock: tableLock);
+
+        Assert.Equal("new-token", session.CommittedCheckpoint);
+        Assert.Equal(1, tableLock.Checks);
+    }
+
+    [Fact]
+    public async Task SyncAsync_DoesNotRecordFailureWhenAnotherRunHoldsTheTable()
+    {
+        var state = new FakeStateStore(null);
+        var engine = new ReplicationEngine(
+            new ThrowingSource(new SynchronizationAlreadyRunningException("job", "account")),
+            new FakeDestination(new FakeSession()),
+            state);
+
+        await Assert.ThrowsAsync<SynchronizationAlreadyRunningException>(
+            () => engine.SyncAsync("job", Table(), 100, CancellationToken.None));
+
+        Assert.Null(state.MarkedState);
+    }
+
+    [Fact]
     public async Task SyncAsync_CancellationMarksFailureWithoutCommitting()
     {
         var session = new FakeSession();
@@ -389,6 +439,19 @@ public sealed class ReplicationEngineTests
             Disposed = true;
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class FakeTableLock(bool held) : IDestinationTableLock
+    {
+        public int Checks { get; private set; }
+
+        public Task EnsureHeldAsync(CancellationToken cancellationToken)
+        {
+            Checks++;
+            return held ? Task.CompletedTask : throw new TableLockLostException("job", "account");
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class HangingStateStore : IReplicationStateStore

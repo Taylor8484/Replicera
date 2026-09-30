@@ -30,6 +30,19 @@ public sealed class SchemaPlannerTests
     }
 
     [Fact]
+    public void Plan_RefusesTableManagedByAnotherJobAndNamesThatJob()
+    {
+        var destination = new DestinationTable("dbo", "account", [], false, "nightly");
+
+        var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy());
+
+        var change = Assert.Single(plan.Changes);
+        Assert.Equal(SchemaChangeKind.OwnershipConflict, change.Kind);
+        Assert.True(change.IsBlocking);
+        Assert.Contains("replication job 'nightly'", change.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Plan_AddsAndExpandsColumnsButRetainsRemovedColumns()
     {
         var destination = new DestinationTable(

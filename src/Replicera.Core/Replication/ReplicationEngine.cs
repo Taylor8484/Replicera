@@ -47,7 +47,8 @@ public sealed partial class ReplicationEngine
         bool preserveExisting = false,
         bool retainDeletedRows = false,
         SynchronizationMode mode = SynchronizationMode.Complete,
-        bool externalLockHeld = false)
+        bool externalLockHeld = false,
+        IDestinationTableLock? tableLock = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(table);
@@ -117,6 +118,11 @@ public sealed partial class ReplicationEngine
             }
 
             var metrics = new SyncMetrics(pages, received, inserted, updated, deleted);
+            if (tableLock is not null)
+            {
+                await tableLock.EnsureHeldAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             await session.CommitAsync(terminalCheckpoint, metrics, cancellationToken).ConfigureAwait(false);
             LogReplicationCommitted(
                 logger,
@@ -128,6 +134,12 @@ public sealed partial class ReplicationEngine
                 updated,
                 deleted);
             return metrics;
+        }
+        catch (SynchronizationAlreadyRunningException)
+        {
+            // The run that holds the lock owns the table's state; recording a failure here would
+            // overwrite it.
+            throw;
         }
         catch (RepliceraException exception)
         {

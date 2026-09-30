@@ -1,7 +1,9 @@
 using System.Data;
+using System.Data.Common;
 using Microsoft.Data.SqlClient;
 using Replicera.Core.Abstractions;
 using Replicera.Core.Configuration;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Core.Schema;
 
@@ -93,6 +95,7 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
         {
             if (transaction is not null)
             {
+                await TryRollbackAsync(transaction).ConfigureAwait(false);
                 await transaction.DisposeAsync().ConfigureAwait(false);
             }
 
@@ -140,6 +143,18 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             ?? throw new InvalidOperationException("SQL Server did not return the managed table ID."));
     }
 
+    private static async Task TryRollbackAsync(DbTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is DbException or InvalidOperationException)
+        {
+            // The connection was lost, so the server has already rolled the transaction back.
+        }
+    }
+
     private static async Task AcquireLockAsync(
         SqlConnection connection,
         SqlTransaction transaction,
@@ -158,11 +173,11 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
                 @LockTimeout = 0;
             SELECT @result;
             """;
-        _ = command.Parameters.AddWithValue("@resource", $"replicera:{jobName}:{logicalName}");
+        _ = command.Parameters.AddWithValue("@resource", SqlServerLockResource.For(jobName, logicalName));
         var result = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
         if (result < 0)
         {
-            throw new InvalidOperationException($"A synchronization is already running for job '{jobName}', table '{logicalName}'.");
+            throw new SynchronizationAlreadyRunningException(jobName, logicalName);
         }
     }
 
@@ -296,15 +311,23 @@ public sealed class SqlServerDestinationWriter(string connectionString) : IDesti
             committed = true;
         }
 
+        // Cleanup runs while another exception may be propagating, so it must not throw: a failed
+        // rollback means the connection is gone and the server has already discarded the transaction.
         public async ValueTask DisposeAsync()
         {
-            if (!committed)
+            try
             {
-                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-            }
+                if (!committed)
+                {
+                    await TryRollbackAsync(transaction).ConfigureAwait(false);
+                }
 
-            await transaction.DisposeAsync().ConfigureAwait(false);
-            await connection.DisposeAsync().ConfigureAwait(false);
+                await transaction.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         private async Task<PageApplyResult> CountOperationsAsync(CancellationToken cancellationToken)

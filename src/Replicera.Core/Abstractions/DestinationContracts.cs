@@ -18,13 +18,27 @@ public interface IDestinationProvider
 
     IReplicationStateStore CreateStateStore(string connectionString);
 
-    Task<IAsyncDisposable> AcquireTableLockAsync(
+    Task<IDestinationTableLock> AcquireTableLockAsync(
         string connectionString,
         string jobName,
         string logicalName,
         CancellationToken cancellationToken);
 
     Task EnsureMetadataStoreAsync(string connectionString, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// An exclusive per-job, per-table lock held on its own destination connection for the whole
+/// synchronization. Disposing it releases the lock.
+/// </summary>
+public interface IDestinationTableLock : IAsyncDisposable
+{
+    /// <summary>
+    /// Confirms the lock is still held, throwing a <see cref="Errors.RepliceraException"/> when its
+    /// connection was lost or the lock was released, so the caller can abandon the transaction
+    /// before committing.
+    /// </summary>
+    Task EnsureHeldAsync(CancellationToken cancellationToken);
 }
 
 public interface IDestinationConnection
@@ -34,7 +48,7 @@ public interface IDestinationConnection
 
 public interface IDestinationSchemaManager
 {
-    Task<DestinationTable?> ReadTableAsync(TableDefinition source, CancellationToken cancellationToken);
+    Task<DestinationTable?> ReadTableAsync(string jobName, TableDefinition source, CancellationToken cancellationToken);
 
     Task ApplySchemaPlanAsync(
         string jobName,

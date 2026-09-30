@@ -10,9 +10,11 @@ namespace Replicera.Provider.SqlServer;
 public sealed class SqlServerSchemaManager(string connectionString) : IDestinationSchemaManager
 {
     public async Task<DestinationTable?> ReadTableAsync(
+        string jobName,
         TableDefinition source,
         CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(source);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -24,7 +26,7 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
         command.CommandText = hasMetadata
             ? """
             SELECT c.[name], t.[name], c.[max_length], c.[precision], c.[scale], c.[is_nullable],
-                   CASE WHEN managed.[TableId] IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END
+                   managed.[ReplicationJobId]
             FROM sys.tables AS tbl
             INNER JOIN sys.schemas AS s ON s.[schema_id] = tbl.[schema_id]
             INNER JOIN sys.columns AS c ON c.[object_id] = tbl.[object_id]
@@ -35,7 +37,7 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
             ORDER BY c.[column_id];
             """
             : """
-            SELECT c.[name], t.[name], c.[max_length], c.[precision], c.[scale], c.[is_nullable], CAST(0 AS bit)
+            SELECT c.[name], t.[name], c.[max_length], c.[precision], c.[scale], c.[is_nullable], CAST(NULL AS nvarchar(128))
             FROM sys.tables AS tbl
             INNER JOIN sys.schemas AS s ON s.[schema_id] = tbl.[schema_id]
             INNER JOIN sys.columns AS c ON c.[object_id] = tbl.[object_id]
@@ -46,14 +48,14 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
         _ = command.Parameters.AddWithValue("@table", SqlServerIdentifier.Normalize(source.DestinationName));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var columns = new List<DestinationColumn>();
-        var managed = false;
+        string? ownerJob = null;
         var sourceByName = source.Columns.ToDictionary(
             column => SqlServerIdentifier.Normalize(column.LogicalName),
             StringComparer.OrdinalIgnoreCase);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var name = reader.GetString(0);
-            managed = reader.GetBoolean(6);
+            ownerJob = reader.IsDBNull(6) ? null : reader.GetString(6);
             var sqlType = reader.GetString(1);
             var matched = sourceByName.GetValueOrDefault(name);
             var type = matched is not null && IsCompatibleSqlType(matched.SourceType, sqlType)
@@ -77,7 +79,12 @@ public sealed class SqlServerSchemaManager(string connectionString) : IDestinati
 
         return columns.Count == 0
             ? null
-            : new DestinationTable("dbo", SqlServerIdentifier.Normalize(source.DestinationName), columns, managed);
+            : new DestinationTable(
+                "dbo",
+                SqlServerIdentifier.Normalize(source.DestinationName),
+                columns,
+                string.Equals(ownerJob, jobName, StringComparison.OrdinalIgnoreCase),
+                ownerJob);
     }
 
     public async Task ApplySchemaPlanAsync(

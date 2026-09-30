@@ -42,7 +42,7 @@ public sealed class DataverseOracleEndToEndTests
         var schema = new OracleSchemaManager(connectionString);
         var plan = SchemaPlanner.Plan(
             table,
-            await schema.ReadTableAsync(table, CancellationToken.None),
+            await schema.ReadTableAsync(jobName, table, CancellationToken.None),
             new SchemaPolicy());
         Assert.False(plan.HasBlockingChanges);
         await schema.ApplySchemaPlanAsync(jobName, table, plan, CancellationToken.None);
