@@ -53,7 +53,9 @@ public static class SchemaPlanner
                 new SchemaChange(
                     SchemaChangeKind.OwnershipConflict,
                     $"{destination.Schema}.{destination.Name}",
-                    "A matching destination table exists but is not managed by Replicera.",
+                    destination.OwnerJob is null
+                        ? "A matching destination table exists but is not managed by Replicera."
+                        : $"A matching destination table exists but is managed by replication job '{destination.OwnerJob}'.",
                     false,
                     true)
             ]);

@@ -9,14 +9,15 @@ namespace Replicera.Provider.Oracle;
 
 public sealed class OracleSchemaManager(string connectionString) : IDestinationSchemaManager
 {
-    public async Task<DestinationTable?> ReadTableAsync(TableDefinition source, CancellationToken cancellationToken)
+    public async Task<DestinationTable?> ReadTableAsync(string jobName, TableDefinition source, CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(source);
         await using var connection = new OracleConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         var schema = await GetCurrentSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
         var tableName = OracleIdentifier.Normalize(source.DestinationName);
-        var managed = await IsManagedAsync(connection, schema, tableName, cancellationToken).ConfigureAwait(false);
+        var ownerJob = await GetOwnerJobAsync(connection, schema, tableName, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.BindByName = true;
         command.CommandText = """
@@ -49,7 +50,14 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
                 type == SourceType.DateTime ? StoredDateTimeBehavior(sqlType) : null));
         }
 
-        return columns.Count == 0 ? null : new DestinationTable(schema, tableName, columns, managed);
+        return columns.Count == 0
+            ? null
+            : new DestinationTable(
+                schema,
+                tableName,
+                columns,
+                string.Equals(ownerJob, jobName, StringComparison.OrdinalIgnoreCase),
+                ownerJob);
     }
 
     public async Task ApplySchemaPlanAsync(
@@ -272,7 +280,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         }
     }
 
-    private static async Task<bool> IsManagedAsync(
+    private static async Task<string?> GetOwnerJobAsync(
         OracleConnection connection,
         string schema,
         string tableName,
@@ -282,15 +290,15 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         exists.CommandText = "SELECT COUNT(*) FROM USER_TABLES WHERE TABLE_NAME = 'REPLICERA_TABLES'";
         if (Convert.ToInt32(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 0)
         {
-            return false;
+            return null;
         }
 
         await using var command = connection.CreateCommand();
         command.BindByName = true;
-        command.CommandText = "SELECT COUNT(*) FROM REPLICERA_TABLES WHERE DESTINATION_SCHEMA = :schema AND DESTINATION_TABLE_NAME = :table_name";
+        command.CommandText = "SELECT REPLICATION_JOB_ID FROM REPLICERA_TABLES WHERE DESTINATION_SCHEMA = :schema AND DESTINATION_TABLE_NAME = :table_name";
         command.Parameters.Add("schema", OracleDbType.NVarchar2).Value = schema;
         command.Parameters.Add("table_name", OracleDbType.NVarchar2).Value = tableName;
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) > 0;
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
 
     private static async Task<string> GetCurrentSchemaAsync(

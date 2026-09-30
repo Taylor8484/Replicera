@@ -45,7 +45,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
 
         var schema = new SqlServerSchemaManager(database.ConnectionString);
-        var current = await schema.ReadTableAsync(table, TestCancellationToken);
+        var current = await schema.ReadTableAsync("integration", table, TestCancellationToken);
         var plan = SchemaPlanner.Plan(table, current, new SchemaPolicy(), SynchronizationMode.Reload);
         var error = await Assert.ThrowsAsync<RepliceraException>(() =>
             schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken));
@@ -217,7 +217,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
 
         var destination = await new SqlServerSchemaManager(database.ConnectionString)
-            .ReadTableAsync(AccountsTable(), TestCancellationToken);
+            .ReadTableAsync("integration", AccountsTable(), TestCancellationToken);
 
         Assert.NotNull(destination);
         Assert.False(destination.IsManaged);
@@ -247,14 +247,23 @@ public sealed class SqlServerProviderIntegrationTests
 
         var expanded = AccountsTable(nameLength: 400, includeDescription: true);
         var schema = new SqlServerSchemaManager(database.ConnectionString);
-        var current = await schema.ReadTableAsync(expanded, TestCancellationToken);
+        var current = await schema.ReadTableAsync("integration", expanded, TestCancellationToken);
         var plan = SchemaPlanner.Plan(expanded, current, new SchemaPolicy());
+
+        var otherJob = await schema.ReadTableAsync("other-job", expanded, TestCancellationToken);
+        Assert.NotNull(otherJob);
+        Assert.False(otherJob.IsManaged);
+        Assert.Equal("integration", otherJob.OwnerJob);
+        var conflict = Assert.Single(SchemaPlanner.Plan(expanded, otherJob, new SchemaPolicy()).Changes);
+        Assert.Equal(SchemaChangeKind.OwnershipConflict, conflict.Kind);
+        Assert.True(conflict.IsBlocking);
+        Assert.Contains("'integration'", conflict.Description, StringComparison.Ordinal);
 
         Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.ExpandColumn);
         Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.AddColumn);
         await schema.ApplySchemaPlanAsync("integration", expanded, plan, TestCancellationToken);
 
-        var applied = await schema.ReadTableAsync(expanded, TestCancellationToken);
+        var applied = await schema.ReadTableAsync("integration", expanded, TestCancellationToken);
         Assert.NotNull(applied);
         Assert.Equal(400, applied.Columns.Single(column => column.Name == "name").MaxLength);
         Assert.Contains(applied.Columns, column => column.Name == "description" && column.IsNullable);
@@ -268,7 +277,7 @@ public sealed class SqlServerProviderIntegrationTests
         var dropPlan = SchemaPlanner.Plan(contracted, applied, new SchemaPolicy());
         Assert.Contains(dropPlan.Changes, change => change.Kind == SchemaChangeKind.DropColumn);
         await schema.ApplySchemaPlanAsync("integration", contracted, dropPlan, TestCancellationToken);
-        var contractedDestination = await schema.ReadTableAsync(contracted, TestCancellationToken);
+        var contractedDestination = await schema.ReadTableAsync("integration", contracted, TestCancellationToken);
         Assert.NotNull(contractedDestination);
         Assert.DoesNotContain(contractedDestination.Columns, column => column.Name == "description");
 
@@ -300,12 +309,12 @@ public sealed class SqlServerProviderIntegrationTests
         }
 
         var schema = new SqlServerSchemaManager(database.ConnectionString);
-        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy());
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync("integration", table, TestCancellationToken), new SchemaPolicy());
         var relax = Assert.Single(plan.Changes);
         Assert.Equal(SchemaChangeKind.RelaxColumnNullability, relax.Kind);
         Assert.Equal("description", relax.ObjectName);
         await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
-        var relaxed = await schema.ReadTableAsync(table, TestCancellationToken);
+        var relaxed = await schema.ReadTableAsync("integration", table, TestCancellationToken);
         Assert.NotNull(relaxed);
         Assert.True(relaxed.Columns.Single(column => column.Name == "description").IsNullable);
         Assert.False(relaxed.Columns.Single(column => column.Name == "accountid").IsNullable);
@@ -355,7 +364,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
 
         var schema = new SqlServerSchemaManager(database.ConnectionString);
-        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy());
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync("integration", table, TestCancellationToken), new SchemaPolicy());
         Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.CreateTable);
         await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
 
@@ -409,11 +418,11 @@ public sealed class SqlServerProviderIntegrationTests
         }
 
         var widened = AmountTable(4);
-        var plan = SchemaPlanner.Plan(widened, await schema.ReadTableAsync(widened, TestCancellationToken), new SchemaPolicy());
+        var plan = SchemaPlanner.Plan(widened, await schema.ReadTableAsync("integration", widened, TestCancellationToken), new SchemaPolicy());
         Assert.Equal(SchemaChangeKind.ExpandColumn, Assert.Single(plan.Changes).Kind);
         await schema.ApplySchemaPlanAsync("integration", widened, plan, TestCancellationToken);
 
-        var applied = await schema.ReadTableAsync(widened, TestCancellationToken);
+        var applied = await schema.ReadTableAsync("integration", widened, TestCancellationToken);
         Assert.NotNull(applied);
         Assert.Equal(4, applied.Columns.Single(column => string.Equals(column.Name, "amount", StringComparison.OrdinalIgnoreCase)).Scale);
         Assert.Empty(SchemaPlanner.Plan(widened, applied, new SchemaPolicy()).Changes);
@@ -468,7 +477,7 @@ public sealed class SqlServerProviderIntegrationTests
         }
 
         var unsupported = CodesTable(false);
-        var plan = SchemaPlanner.Plan(unsupported, await schema.ReadTableAsync(unsupported, TestCancellationToken), new SchemaPolicy());
+        var plan = SchemaPlanner.Plan(unsupported, await schema.ReadTableAsync("integration", unsupported, TestCancellationToken), new SchemaPolicy());
         Assert.Equal(SchemaChangeKind.UnsupportedColumnRetained, Assert.Single(plan.Changes).Kind);
         await schema.ApplySchemaPlanAsync("integration", unsupported, plan, TestCancellationToken);
         await using (var session = await writer.BeginIncrementalSyncAsync("integration", unsupported, "checkpoint-1", TestCancellationToken))
@@ -516,7 +525,7 @@ public sealed class SqlServerProviderIntegrationTests
             _ = await legacy.ExecuteNonQueryAsync(TestCancellationToken);
         }
 
-        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync(table, TestCancellationToken), new SchemaPolicy(), SynchronizationMode.NoDataLoss);
+        var plan = SchemaPlanner.Plan(table, await schema.ReadTableAsync("integration", table, TestCancellationToken), new SchemaPolicy(), SynchronizationMode.NoDataLoss);
         Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.SourceColumnRemoved && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName.Equals("legacy", StringComparison.OrdinalIgnoreCase));
         await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
@@ -528,7 +537,7 @@ public sealed class SqlServerProviderIntegrationTests
             _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "New row", 1)), TestCancellationToken);
             await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
         }
-        var relaxed = await schema.ReadTableAsync(table, TestCancellationToken);
+        var relaxed = await schema.ReadTableAsync("integration", table, TestCancellationToken);
         var legacyColumn = relaxed!.Columns.Single(column => column.Name == "legacy");
         Assert.True(legacyColumn.IsNullable);
         Assert.Equal(20, legacyColumn.MaxLength);
@@ -548,7 +557,7 @@ public sealed class SqlServerProviderIntegrationTests
         var schema = new SqlServerSchemaManager(database.ConnectionString);
         var writer = new SqlServerDestinationWriter(database.ConnectionString);
         var narrowed = AccountsTable(nameLength: 100);
-        var plan = SchemaPlanner.Plan(narrowed, await schema.ReadTableAsync(narrowed, TestCancellationToken), new SchemaPolicy());
+        var plan = SchemaPlanner.Plan(narrowed, await schema.ReadTableAsync("integration", narrowed, TestCancellationToken), new SchemaPolicy());
         Assert.Equal(SchemaChangeKind.NarrowerSourceColumn, Assert.Single(plan.Changes).Kind);
         await schema.ApplySchemaPlanAsync("integration", narrowed, plan, TestCancellationToken);
         await using (var session = await writer.BeginInitialSyncAsync("integration", narrowed, TestCancellationToken))
@@ -557,7 +566,7 @@ public sealed class SqlServerProviderIntegrationTests
             await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
         }
 
-        var destination = await schema.ReadTableAsync(narrowed, TestCancellationToken);
+        var destination = await schema.ReadTableAsync("integration", narrowed, TestCancellationToken);
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
@@ -603,7 +612,7 @@ public sealed class SqlServerProviderIntegrationTests
         var replaced = CodeTable(true);
         var plan = SchemaPlanner.Plan(
             replaced,
-            await schema.ReadTableAsync(replaced, TestCancellationToken),
+            await schema.ReadTableAsync("integration", replaced, TestCancellationToken),
             new SchemaPolicy(),
             mode,
             new DateTimeOffset(2026, 9, 30, 0, 0, 0, TimeSpan.Zero));
@@ -613,7 +622,7 @@ public sealed class SqlServerProviderIntegrationTests
 
         var state = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
         Assert.Null(state!.DataCheckpoint);
-        var destination = await schema.ReadTableAsync(replaced, TestCancellationToken);
+        var destination = await schema.ReadTableAsync("integration", replaced, TestCancellationToken);
         Assert.Equal(SourceType.Int32, destination!.Columns.Single(column => string.Equals(column.Name, "code", StringComparison.OrdinalIgnoreCase)).SourceType);
         Assert.Equal(noDataLoss, destination.Columns.Any(column => string.Equals(column.Name, "code_replaced_20260930", StringComparison.OrdinalIgnoreCase)));
 
@@ -658,15 +667,15 @@ public sealed class SqlServerProviderIntegrationTests
         await PrepareTableAsync(database.ConnectionString, EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent));
         var schema = new SqlServerSchemaManager(database.ConnectionString);
         var unchanged = EventTable(DateTimeBehavior.UserLocal, DateTimeBehavior.TimeZoneIndependent);
-        Assert.Empty(SchemaPlanner.Plan(unchanged, await schema.ReadTableAsync(unchanged, TestCancellationToken), new SchemaPolicy()).Changes);
+        Assert.Empty(SchemaPlanner.Plan(unchanged, await schema.ReadTableAsync("integration", unchanged, TestCancellationToken), new SchemaPolicy()).Changes);
 
         var changed = EventTable(DateTimeBehavior.DateOnly, DateTimeBehavior.UserLocal);
-        var plan = SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy());
+        var plan = SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy());
         Assert.Equal(
             ["userlocal"],
             plan.Changes.Where(change => change.Kind == SchemaChangeKind.ReplaceColumn).Select(change => change.ObjectName).Order(StringComparer.Ordinal));
         await schema.ApplySchemaPlanAsync("integration", changed, plan, TestCancellationToken);
-        Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync(changed, TestCancellationToken), new SchemaPolicy()).Changes);
+        Assert.Empty(SchemaPlanner.Plan(changed, await schema.ReadTableAsync("integration", changed, TestCancellationToken), new SchemaPolicy()).Changes);
     }
 
     [Fact]
@@ -1166,7 +1175,7 @@ public sealed class SqlServerProviderIntegrationTests
     {
         await new SqlServerMetadataStore(connectionString).EnsureCreatedAsync(TestCancellationToken);
         var schema = new SqlServerSchemaManager(connectionString);
-        var current = await schema.ReadTableAsync(table, TestCancellationToken);
+        var current = await schema.ReadTableAsync("integration", table, TestCancellationToken);
         var plan = SchemaPlanner.Plan(table, current, new SchemaPolicy());
         await schema.ApplySchemaPlanAsync("integration", table, plan, TestCancellationToken);
     }

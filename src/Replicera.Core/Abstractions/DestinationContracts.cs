@@ -48,7 +48,7 @@ public interface IDestinationConnection
 
 public interface IDestinationSchemaManager
 {
-    Task<DestinationTable?> ReadTableAsync(TableDefinition source, CancellationToken cancellationToken);
+    Task<DestinationTable?> ReadTableAsync(string jobName, TableDefinition source, CancellationToken cancellationToken);
 
     Task ApplySchemaPlanAsync(
         string jobName,

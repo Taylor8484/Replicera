@@ -9,22 +9,23 @@ namespace Replicera.Provider.PostgreSql;
 
 public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinationSchemaManager
 {
-    public async Task<DestinationTable?> ReadTableAsync(TableDefinition source, CancellationToken cancellationToken)
+    public async Task<DestinationTable?> ReadTableAsync(string jobName, TableDefinition source, CancellationToken cancellationToken)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
         ArgumentNullException.ThrowIfNull(source);
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var metadataCommand = new NpgsqlCommand("SELECT to_regclass('replicera.tables') IS NOT NULL;", connection);
         var hasMetadata = (bool)(await metadataCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
-        var managedExpression = hasMetadata
-            ? "EXISTS (SELECT 1 FROM replicera.tables AS managed WHERE managed.destination_schema = c.table_schema AND managed.destination_table_name = c.table_name)"
-            : "FALSE";
+        var ownerExpression = hasMetadata
+            ? "(SELECT managed.replication_job_id FROM replicera.tables AS managed WHERE managed.destination_schema = c.table_schema AND managed.destination_table_name = c.table_name)"
+            : "NULL::text";
         await using var command = connection.CreateCommand();
 #pragma warning disable CA2100 // The only interpolation selects a fixed provider-owned expression.
         command.CommandText = $"""
             SELECT c.column_name, c.data_type, c.character_maximum_length,
                    c.numeric_precision, c.numeric_scale, c.is_nullable = 'YES',
-                   {managedExpression}
+                   {ownerExpression}
             FROM information_schema.columns AS c
             WHERE c.table_schema = 'public' AND c.table_name = @table
             ORDER BY c.ordinal_position;
@@ -33,14 +34,14 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
         _ = command.Parameters.AddWithValue("table", PostgreSqlIdentifier.Normalize(source.DestinationName));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var columns = new List<DestinationColumn>();
-        var managed = false;
+        string? ownerJob = null;
         var sourceByName = source.Columns.ToDictionary(
             column => PostgreSqlIdentifier.Normalize(column.LogicalName),
             StringComparer.Ordinal);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             var name = reader.GetString(0);
-            managed = reader.GetBoolean(6);
+            ownerJob = reader.IsDBNull(6) ? null : reader.GetString(6);
             var sqlType = reader.GetString(1);
             var matched = sourceByName.GetValueOrDefault(name);
             var type = matched is not null && IsCompatibleSqlType(matched.SourceType, sqlType)
@@ -58,7 +59,12 @@ public sealed class PostgreSqlSchemaManager(string connectionString) : IDestinat
 
         return columns.Count == 0
             ? null
-            : new DestinationTable("public", PostgreSqlIdentifier.Normalize(source.DestinationName), columns, managed);
+            : new DestinationTable(
+                "public",
+                PostgreSqlIdentifier.Normalize(source.DestinationName),
+                columns,
+                string.Equals(ownerJob, jobName, StringComparison.OrdinalIgnoreCase),
+                ownerJob);
     }
 
     public async Task ApplySchemaPlanAsync(

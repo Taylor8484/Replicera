@@ -112,7 +112,7 @@ internal static class RuntimeCommands
         var table = await source.GetTableAsync(logicalName, cancellationToken).ConfigureAwait(false);
         var trackingStatus = await tracking.GetStatusAsync(logicalName, cancellationToken).ConfigureAwait(false);
         var schema = context.Provider.CreateSchemaManager(context.ConnectionString);
-        var destination = await schema.ReadTableAsync(table, cancellationToken).ConfigureAwait(false);
+        var destination = await schema.ReadTableAsync(context.Job.Name, table, cancellationToken).ConfigureAwait(false);
         var plan = SchemaPlanner.Plan(table, destination, context.Job.Schema, context.Job.Sync.Mode);
         var destinationSchema = destination?.Schema ?? context.Provider.DefaultSchema;
 
@@ -275,7 +275,7 @@ internal static class RuntimeCommands
             }
 
             var schema = context.Provider.CreateSchemaManager(context.ConnectionString);
-            var currentDestination = await schema.ReadTableAsync(table, cancellationToken).ConfigureAwait(false);
+            var currentDestination = await schema.ReadTableAsync(context.Job.Name, table, cancellationToken).ConfigureAwait(false);
             var plan = SchemaPlanner.Plan(table, currentDestination, context.Job.Schema, context.Job.Sync.Mode);
             await schema.ApplySchemaPlanAsync(context.Job.Name, table, plan, cancellationToken).ConfigureAwait(false);
 
