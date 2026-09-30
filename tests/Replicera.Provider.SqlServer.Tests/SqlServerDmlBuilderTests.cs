@@ -16,16 +16,34 @@ public sealed class SqlServerDmlBuilderTests
                 new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, MaxLength = 100 }
             ]);
 
-        var sql = SqlServerDmlBuilder.BuildCreateStaging(table, "stage");
+        var sql = SqlServerDmlBuilder.BuildCreateStaging(table, "#stage");
 
-        Assert.Contains("ALTER TABLE [dbo].[stage] ALTER COLUMN [name] nvarchar(100) NULL", sql, StringComparison.Ordinal);
+        Assert.Contains("INTO [#stage] FROM [dbo].[account]", sql, StringComparison.Ordinal);
+        Assert.Contains("ALTER TABLE [#stage] ALTER COLUMN [name] nvarchar(100) COLLATE DATABASE_DEFAULT NULL", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("ALTER COLUMN [accountid]", sql, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("stage")]
+    [InlineData("##stage")]
+    public void BuildCreateStaging_RequiresSessionTemporaryTable(string stagingTable)
+    {
+        Assert.Throws<ArgumentException>(() => SqlServerDmlBuilder.BuildCreateStaging(Table(), stagingTable));
+    }
+
+    [Fact]
+    public void StagingTableName_IsSessionTemporaryTable()
+    {
+        var name = SqlServerDmlBuilder.StagingTableName(Guid.Parse("11111111-2222-3333-4444-555555555555"));
+
+        Assert.Equal("#replicera_stage_11111111222233334444555555555555", name);
+        Assert.True(name.Length <= 116);
     }
 
     [Fact]
     public void BuildApplyStaging_UsesExplicitSetBasedStatements()
     {
-        var sql = SqlServerDmlBuilder.BuildApplyStaging(Table(), "replicera_stage_123");
+        var sql = SqlServerDmlBuilder.BuildApplyStaging(Table(), "#replicera_stage_123");
 
         Assert.Contains("UPDATE target", sql, StringComparison.Ordinal);
         Assert.Contains("INSERT INTO [dbo].[account]", sql, StringComparison.Ordinal);
@@ -39,7 +57,7 @@ public sealed class SqlServerDmlBuilderTests
     {
         var sql = SqlServerDmlBuilder.BuildApplyStaging(
             Table(),
-            "replicera_stage_123",
+            "#replicera_stage_123",
             retainDeletedRows: true);
 
         Assert.Contains("[data_load_dte] = SYSUTCDATETIME()", sql, StringComparison.Ordinal);

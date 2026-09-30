@@ -7,11 +7,18 @@ public static class SqlServerDmlBuilder
 {
     public const string OperationColumn = "__replicera_operation";
 
+    /// <summary>
+    /// Names a session temporary staging table. Temporary tables need no permission in the
+    /// destination database and are removed by SQL Server when the connection closes, including
+    /// after a crash, so no staging objects are left behind.
+    /// </summary>
+    public static string StagingTableName(Guid runId) => $"#replicera_stage_{runId:N}";
+
     public static string BuildCreateStaging(TableDefinition table, string stagingTable, string schema = "dbo")
     {
         ArgumentNullException.ThrowIfNull(table);
         var target = Qualified(schema, table.DestinationName);
-        var staging = Qualified(schema, stagingTable);
+        var staging = Staging(stagingTable);
         var statements = new List<string>
         {
             $"SELECT TOP (0) *, CAST(NULL AS char(1)) AS {SqlServerIdentifier.Quote(OperationColumn)} INTO {staging} FROM {target};"
@@ -23,7 +30,9 @@ public static class SqlServerDmlBuilder
                 var sqlType = column.IsLookupTarget
                     ? "nvarchar(128)"
                     : SqlServerTypeMapper.Map(column.Source).Declaration;
-                return $"ALTER TABLE {staging} ALTER COLUMN {SqlServerIdentifier.Quote(column.Name)} {sqlType} NULL;";
+                // Redefined text columns would otherwise take the tempdb collation.
+                var collation = IsText(sqlType) ? " COLLATE DATABASE_DEFAULT" : string.Empty;
+                return $"ALTER TABLE {staging} ALTER COLUMN {SqlServerIdentifier.Quote(column.Name)} {sqlType}{collation} NULL;";
             }));
         return string.Join(Environment.NewLine, statements);
     }
@@ -39,7 +48,7 @@ public static class SqlServerDmlBuilder
         var primaryKey = columns.Single(column => column.Source.IsPrimaryKey && !column.IsLookupTarget);
         var mutable = columns.Where(column => !column.Source.IsPrimaryKey).ToArray();
         var target = Qualified(schema, table.DestinationName);
-        var staging = Qualified(schema, stagingTable);
+        var staging = Staging(stagingTable);
         var quotedPrimaryKey = SqlServerIdentifier.Quote(primaryKey.Name);
         var operation = SqlServerIdentifier.Quote(OperationColumn);
         var statements = new List<string>();
@@ -88,8 +97,28 @@ public static class SqlServerDmlBuilder
         return string.Join(Environment.NewLine, statements);
     }
 
-    public static string BuildDropStaging(string stagingTable, string schema = "dbo") =>
-        $"DROP TABLE {Qualified(schema, stagingTable)};";
+    public static string BuildDropStaging(string stagingTable) =>
+        $"DROP TABLE {Staging(stagingTable)};";
+
+    public static string BuildTruncateStaging(string stagingTable) =>
+        $"TRUNCATE TABLE {Staging(stagingTable)};";
+
+    internal static string Staging(string stagingTable)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stagingTable);
+        if (!stagingTable.StartsWith('#') || stagingTable.StartsWith("##", StringComparison.Ordinal))
+        {
+            throw new ArgumentException("Staging tables must be session temporary tables.", nameof(stagingTable));
+        }
+
+        return SqlServerIdentifier.Quote(stagingTable);
+    }
+
+    private static bool IsText(string sqlType) =>
+        sqlType.StartsWith("nvarchar", StringComparison.OrdinalIgnoreCase)
+        || sqlType.StartsWith("nchar", StringComparison.OrdinalIgnoreCase)
+        || sqlType.StartsWith("varchar", StringComparison.OrdinalIgnoreCase)
+        || sqlType.StartsWith("char", StringComparison.OrdinalIgnoreCase);
 
     private static string Qualified(string schema, string table) =>
         $"{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(schema))}.{SqlServerIdentifier.Quote(SqlServerIdentifier.Normalize(table))}";

@@ -181,6 +181,97 @@ public sealed class SqlServerProviderIntegrationTests
 
     [SkippableFact]
     [Trait("Category", "SqlServerIntegration")]
+    public async Task StagingUsesSessionTemporaryTableOutsideTheDestinationDatabase()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(Page(Upsert(Guid.NewGuid(), "Staged", 1)), TestCancellationToken);
+
+            await using var connection = new SqlConnection(database.ConnectionString);
+            await connection.OpenAsync(TestCancellationToken);
+            await using var command = connection.CreateCommand();
+            // The sync transaction holds metadata locks on objects it created, so read the catalog
+            // without waiting for them.
+            command.CommandText = """
+                SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+                SELECT COUNT_BIG(*) FROM sys.tables WHERE [name] LIKE N'%replicera[_]stage[_]%';
+                SELECT COUNT_BIG(*) FROM tempdb.sys.tables WHERE [name] LIKE N'#replicera[_]stage[_]%';
+                """;
+            await using var reader = await command.ExecuteReaderAsync(TestCancellationToken);
+            Assert.True(await reader.ReadAsync(TestCancellationToken));
+            Assert.Equal(0, reader.GetInt64(0));
+            Assert.True(await reader.NextResultAsync(TestCancellationToken));
+            Assert.True(await reader.ReadAsync(TestCancellationToken));
+            Assert.True(reader.GetInt64(0) >= 1);
+            await session.CommitAsync("staged", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "SqlServerIntegration")]
+    public async Task Sync_SucceedsWithoutPermissionToCreateTables()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+
+        var table = AccountsTable();
+        await PrepareTableAsync(database.ConnectionString, table);
+        var login = $"replicera_dml_{Guid.NewGuid():N}";
+        var password = $"Aa1!{Guid.NewGuid():N}";
+        var admin = new SqlConnectionStringBuilder(database.ConnectionString);
+        try
+        {
+            await using (var connection = new SqlConnection(database.ConnectionString))
+            {
+                await connection.OpenAsync(TestCancellationToken);
+                await using var grant = connection.CreateCommand();
+                grant.CommandText = $"""
+                    CREATE LOGIN [{login}] WITH PASSWORD = N'{password}', CHECK_POLICY = OFF;
+                    CREATE USER [{login}] FOR LOGIN [{login}];
+                    GRANT SELECT, INSERT, UPDATE, DELETE ON [dbo].[account] TO [{login}];
+                    GRANT SELECT, INSERT, UPDATE ON SCHEMA::[replicera] TO [{login}];
+                    """;
+                _ = await grant.ExecuteNonQueryAsync(TestCancellationToken);
+            }
+
+            var restricted = new SqlConnectionStringBuilder(database.ConnectionString)
+            {
+                UserID = login,
+                Password = password
+            }.ConnectionString;
+            var id = Guid.NewGuid();
+            var writer = new SqlServerDestinationWriter(restricted);
+            await using (var session = await writer.BeginInitialSyncAsync("integration", table, TestCancellationToken))
+            {
+                _ = await session.ApplyPageAsync(Page(Upsert(id, "Restricted", 1)), TestCancellationToken);
+                await session.CommitAsync("restricted", new(1, 1, 1, 0, 0), TestCancellationToken);
+            }
+
+            await using var verify = new SqlConnection(database.ConnectionString);
+            await verify.OpenAsync(TestCancellationToken);
+            await using var command = verify.CreateCommand();
+            command.CommandText = "SELECT [name] FROM [dbo].[account] WHERE [accountid] = @id;";
+            _ = command.Parameters.AddWithValue("@id", id);
+            Assert.Equal("Restricted", await command.ExecuteScalarAsync(TestCancellationToken));
+        }
+        finally
+        {
+            SqlConnection.ClearAllPools();
+            admin.InitialCatalog = "master";
+            await using var connection = new SqlConnection(admin.ConnectionString);
+            await connection.OpenAsync(CancellationToken.None);
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = $"IF SUSER_ID(N'{login}') IS NOT NULL DROP LOGIN [{login}];";
+            _ = await drop.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+    }
+
+    [SkippableFact]
+    [Trait("Category", "SqlServerIntegration")]
     public async Task SchemaManager_ReadsUnmanagedTableWithoutMetadataSchema()
     {
         await using var database = await TestDatabase.CreateAsync();
