@@ -1,4 +1,5 @@
 using Microsoft.Xrm.Sdk;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Dataverse.ChangeTracking;
 
@@ -34,5 +35,30 @@ public sealed class DataverseValueConverterTests
     public void Convert_RejectsUnsupportedRuntimeType()
     {
         Assert.Throws<NotSupportedException>(() => DataverseValueConverter.Convert(new byte[] { 1, 2 }));
+    }
+
+    [Fact]
+    public void ConvertAttributes_ReportsUnsupportedValueWithColumnButNotValue()
+    {
+        var entity = new Entity("account", Guid.NewGuid())
+        {
+            ["name"] = "Contoso",
+            ["secretblob"] = new byte[] { 0x53, 0x45, 0x43 }
+        };
+
+        var exception = Assert.Throws<RepliceraException>(() => DataverseValueConverter.ConvertAttributes(entity));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, exception.Category);
+        Assert.Contains("'secretblob'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'account'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("System.Byte[]", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MapChange_ReportsUnknownChangeTypeAsUnsupportedMetadata()
+    {
+        var exception = Assert.Throws<RepliceraException>(() => DataverseChangeReader.MapChange(new object()));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, exception.Category);
     }
 }

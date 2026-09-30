@@ -441,8 +441,11 @@ public sealed class CliApplicationTests
         }
     }
 
-    [Fact]
-    public async Task Status_DestinationFailureDoesNotExposeConnectionStringSecret()
+    [Theory]
+    [InlineData("sqlserver", "Server=127.0.0.1,1;User ID=test;Password={0};Encrypt=False;Connect Timeout=1")]
+    [InlineData("postgresql", "Host=127.0.0.1;Port=1;Username=test;Password={0};Timeout=1")]
+    [InlineData("oracle", "User Id=test;Password={0};Data Source=127.0.0.1:1/FREEPDB1;Connection Timeout=2")]
+    public async Task Status_DestinationFailureReturnsDestinationExitCodeWithoutSecret(string provider, string connectionFormat)
     {
         var directory = Directory.CreateTempSubdirectory("replicera-test-");
         var path = Path.Combine(directory.FullName, "replicera.json");
@@ -474,7 +477,7 @@ public sealed class CliApplicationTests
                         new DestinationConfiguration
                         {
                             Name = "destination",
-                            Provider = "sqlserver",
+                            Provider = provider,
                             ConnectionStringEnvironmentVariable = variable
                         }
                     ],
@@ -492,7 +495,7 @@ public sealed class CliApplicationTests
                 CancellationToken.None);
             Environment.SetEnvironmentVariable(
                 variable,
-                $"Server=127.0.0.1,1;User ID=test;Password={secret};Encrypt=False;Connect Timeout=1");
+                string.Format(System.Globalization.CultureInfo.InvariantCulture, connectionFormat, secret));
             using var error = new StringWriter();
 
             var exitCode = await CliApplication.RunAsync(

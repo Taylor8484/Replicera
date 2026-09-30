@@ -72,5 +72,35 @@ public sealed class DataverseFaultClassifierTests
             DataverseFaultClassifier.Classify(new WhoAmIRequest(), Fault(errorCode)).Category);
     }
 
+    [Theory]
+    [InlineData(unchecked((int)0x80040220))]
+    [InlineData(unchecked((int)0x80042F06))]
+    public void Classify_PrivilegeFailuresAsAuthorization(int errorCode)
+    {
+        var fault = Fault(errorCode);
+
+        Assert.Equal(ErrorCategory.Authorization, DataverseFaultClassifier.Classify(new WhoAmIRequest(), fault).Category);
+        Assert.False(DataverseFaultClassifier.IsTransient(fault));
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData(400, false)]
+    [InlineData(404, false)]
+    [InlineData(408, true)]
+    [InlineData(429, true)]
+    [InlineData(500, true)]
+    [InlineData(503, true)]
+    public void IsTransient_RequiresThrottlingTimeoutOrServerFailure(int? statusCode, bool expected)
+    {
+        var fault = Fault(-1);
+        if (statusCode is not null)
+        {
+            fault.ErrorDetails["ApiExceptionHttpStatusCode"] = statusCode.Value;
+        }
+
+        Assert.Equal(expected, DataverseFaultClassifier.IsTransient(fault));
+    }
+
     private static OrganizationServiceFault Fault(int errorCode) => new() { ErrorCode = errorCode };
 }

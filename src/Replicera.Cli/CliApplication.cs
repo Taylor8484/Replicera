@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Reflection;
 using Microsoft.Data.SqlClient;
 using Microsoft.PowerPlatform.Dataverse.Client.Utils;
@@ -118,7 +119,9 @@ public static class CliApplication
         }
         catch (OperationCanceledException)
         {
-            await error.WriteLineAsync("error: operation cancelled").ConfigureAwait(false);
+            await error.WriteLineAsync(cancellationToken.IsCancellationRequested
+                ? "error: operation cancelled"
+                : "error: operation timed out").ConfigureAwait(false);
             return (int)ExitCode.SynchronizationFailure;
         }
         catch (DataverseConnectionException)
@@ -134,6 +137,13 @@ public static class CliApplication
         catch (SqlException exception)
         {
             await error.WriteLineAsync($"error: SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
+            return (int)ExitCode.DestinationConnectivity;
+        }
+        catch (DbException exception)
+        {
+            await error.WriteLineAsync(exception.SqlState is { Length: > 0 } state
+                ? $"error: destination database operation failed (SQLSTATE {state})."
+                : "error: destination database operation failed.").ConfigureAwait(false);
             return (int)ExitCode.DestinationConnectivity;
         }
         catch (Exception)
@@ -516,6 +526,13 @@ public static class CliApplication
         catch (SqlException exception)
         {
             await error.WriteLineAsync($"error: SQL Server operation failed (error {exception.Number}).").ConfigureAwait(false);
+            return (int)ExitCode.DestinationConnectivity;
+        }
+        catch (DbException exception)
+        {
+            await error.WriteLineAsync(exception.SqlState is { Length: > 0 } state
+                ? $"error: destination database operation failed (SQLSTATE {state})."
+                : "error: destination database operation failed.").ConfigureAwait(false);
             return (int)ExitCode.DestinationConnectivity;
         }
         catch (Exception)

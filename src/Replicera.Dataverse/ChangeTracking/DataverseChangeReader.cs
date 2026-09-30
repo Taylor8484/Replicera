@@ -4,6 +4,7 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Query;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Errors;
 using Replicera.Core.Models;
 using Replicera.Dataverse.Errors;
 
@@ -81,7 +82,9 @@ public sealed class DataverseChangeReader(IDataverseService service) : ISourceCh
                 item.RemovedItem.Id,
                 ChangeKind.Delete,
                 new Dictionary<string, object?>()),
-            _ => throw new NotSupportedException($"Dataverse change type '{change.GetType().FullName}' is not supported.")
+            _ => throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                $"Dataverse change type '{change.GetType().FullName}' is not supported.")
         };
     }
 }
