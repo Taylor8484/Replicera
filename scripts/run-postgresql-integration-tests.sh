@@ -21,13 +21,25 @@ docker run --detach --name "$container_name" \
     postgres:17-alpine >/dev/null
 
 port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort}}' "$container_name")"
+postgres_ready=false
 for _ in $(seq 1 60); do
     if docker exec "$container_name" pg_isready --username postgres >/dev/null 2>&1; then
-        break
+        # The image briefly starts a temporary server during initialization.
+        # Require readiness to remain stable across that server's restart.
+        sleep 2
+        if docker exec "$container_name" pg_isready --username postgres >/dev/null 2>&1; then
+            postgres_ready=true
+            break
+        fi
     fi
     sleep 1
 done
-docker exec "$container_name" pg_isready --username postgres >/dev/null
+
+if [[ "$postgres_ready" != true ]]; then
+    docker logs "$container_name" >&2
+    echo "PostgreSQL did not become ready within 60 attempts." >&2
+    exit 1
+fi
 
 export REPLICERA_POSTGRES_TEST_CONNECTION_STRING="Host=127.0.0.1;Port=$port;Database=postgres;Username=postgres;Password=$password;Pooling=false"
 dotnet test tests/Replicera.IntegrationTests/Replicera.IntegrationTests.csproj \
