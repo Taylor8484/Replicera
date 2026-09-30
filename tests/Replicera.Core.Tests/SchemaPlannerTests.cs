@@ -590,6 +590,79 @@ public sealed class SchemaPlannerTests
         Assert.Contains(plan.Changes, change => change.Kind == SchemaChangeKind.RelaxColumnNullability && change.ObjectName == "legacy");
     }
 
+    private static readonly DateTimeOffset PlanTime = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void Plan_ReplacesColumnWhoseTypeChangedInCompleteMode()
+    {
+        var plan = SchemaPlanner.Plan(SourceTable(includeNumber: true), TypeChangedDestination(), new SchemaPolicy(), SynchronizationMode.Complete, PlanTime);
+
+        var change = Assert.Single(plan.Changes, change => change.ObjectName == "number");
+        Assert.Equal(SchemaChangeKind.ReplaceColumn, change.Kind);
+        Assert.Equal("number", change.ObjectName);
+        Assert.Null(change.NewObjectName);
+        Assert.True(change.IsAutomatic);
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_PreservesReplacedColumnValuesInNoDataLossMode()
+    {
+        var plan = SchemaPlanner.Plan(SourceTable(includeNumber: true), TypeChangedDestination(), new SchemaPolicy(), SynchronizationMode.NoDataLoss, PlanTime);
+
+        var change = Assert.Single(plan.Changes, change => change.Kind == SchemaChangeKind.ReplaceColumn);
+        Assert.Equal("number_replaced_20260930", change.NewObjectName);
+        Assert.True(change.IsAutomatic);
+        Assert.False(plan.HasBlockingChanges);
+    }
+
+    [Fact]
+    public void Plan_BlocksReplacementWhenPreservedColumnNameIsTaken()
+    {
+        var destination = TypeChangedDestination();
+        destination = destination with
+        {
+            Columns = [.. destination.Columns, new DestinationColumn("number_replaced_20260930", SourceType.String, true, 20)]
+        };
+
+        var plan = SchemaPlanner.Plan(SourceTable(includeNumber: true), destination, new SchemaPolicy(), SynchronizationMode.NoDataLoss, PlanTime);
+
+        var blocked = Assert.Single(plan.Changes, change => change.IsBlocking);
+        Assert.Equal("number", blocked.ObjectName);
+        Assert.Contains("number_replaced_20260930", blocked.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Plan_BlocksPrimaryKeyTypeChange()
+    {
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new("accountid", SourceType.String, false, 36),
+                new("name", SourceType.String, true, 100),
+                new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(SourceTable(), destination, new SchemaPolicy());
+
+        Assert.Equal(SchemaChangeKind.IncompatibleColumn, Assert.Single(plan.Changes).Kind);
+        Assert.True(plan.HasBlockingChanges);
+    }
+
+    private static DestinationTable TypeChangedDestination() => new(
+        "dbo",
+        "account",
+        [
+            new("accountid", SourceType.Guid, false),
+            new("name", SourceType.String, true, 100),
+            new("number", SourceType.String, true, 20),
+            new(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true),
+            new(ManagedColumnNames.SourceRemoveDate, SourceType.DateTime, true)
+        ],
+        true);
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>

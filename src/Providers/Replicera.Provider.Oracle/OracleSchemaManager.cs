@@ -68,7 +68,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await EnsureNoExternalDependenciesAsync(connection, source, plan, cancellationToken).ConfigureAwait(false);
         var requiresResync = plan.Changes.Any(change => change.IsAutomatic && (change.Kind is
-                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable
+                SchemaChangeKind.CreateTable or SchemaChangeKind.AddColumn or SchemaChangeKind.AddLookupTypeColumn or SchemaChangeKind.AddManagedColumn or SchemaChangeKind.RecreateTable or SchemaChangeKind.ReplaceColumn
             || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresCopyConversion(source, change.ObjectName))));
         if (requiresResync)
         {
@@ -88,6 +88,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
                 SchemaChangeKind.DropColumn => [BuildDropColumn(source, change.ObjectName)],
                 SchemaChangeKind.ExpandColumn => BuildExpandColumn(source, change.ObjectName),
                 SchemaChangeKind.RelaxColumnNullability => [BuildRelaxNullability(source, change.ObjectName)],
+                SchemaChangeKind.ReplaceColumn => BuildReplaceColumn(source, change.ObjectName, change.NewObjectName),
                 _ => []
             };
             foreach (var sql in statements)
@@ -206,7 +207,7 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         }
 
         foreach (var change in plan.Changes.Where(change => change.IsAutomatic
-                     && (change.Kind == SchemaChangeKind.DropColumn
+                     && (change.Kind is SchemaChangeKind.DropColumn or SchemaChangeKind.ReplaceColumn
                          || (change.Kind == SchemaChangeKind.ExpandColumn && RequiresCopyConversion(source, change.ObjectName)))))
         {
             await EnsureNoExternalDependenciesAsync(connection, source.DestinationName, change.ObjectName, cancellationToken).ConfigureAwait(false);
@@ -386,6 +387,23 @@ public sealed class OracleSchemaManager(string connectionString) : IDestinationS
         }
 
         return statements;
+    }
+
+    // The old column is dropped, or renamed when its values must be preserved, before the new
+    // column is added under the original name. The checkpoint is reset before this DDL runs, so an
+    // interrupted replacement recovers through a full read.
+    internal static List<string> BuildReplaceColumn(TableDefinition table, string logicalName, string? preservedName)
+    {
+        var column = FindColumn(table, logicalName);
+        var tableName = OracleIdentifier.Quote(OracleIdentifier.Normalize(table.DestinationName));
+        var columnName = OracleIdentifier.Quote(OracleIdentifier.Normalize(column.LogicalName));
+        return
+        [
+            preservedName is null
+                ? $"ALTER TABLE {tableName} DROP COLUMN {columnName}"
+                : BuildRenameColumn(table, column.LogicalName, preservedName),
+            $"ALTER TABLE {tableName} ADD ({columnName} {OracleTypeMapper.Map(column).Declaration} NULL)"
+        ];
     }
 
     private static string BuildAddManagedColumn(TableDefinition table, string columnName) =>

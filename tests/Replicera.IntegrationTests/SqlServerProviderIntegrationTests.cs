@@ -561,6 +561,80 @@ public sealed class SqlServerProviderIntegrationTests
         Assert.Equal(200, destination!.Columns.Single(column => string.Equals(column.Name, "name", StringComparison.OrdinalIgnoreCase)).MaxLength);
     }
 
+    [Theory]
+    [Trait("Category", "SqlServerIntegration")]
+    [InlineData(SynchronizationMode.Complete)]
+    [InlineData(SynchronizationMode.NoDataLoss)]
+    public async Task ColumnWithChangedType_IsReplacedAccordingToMode(SynchronizationMode mode)
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition CodeTable(bool numeric) => new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = 100 },
+                numeric
+                    ? new ColumnDefinition { LogicalName = "code", SourceType = SourceType.Int32, IsNullable = true }
+                    : new ColumnDefinition { LogicalName = "code", SourceType = SourceType.String, IsNullable = true, MaxLength = 20 }
+            ]);
+        await new SqlServerMetadataStore(database.ConnectionString).EnsureCreatedAsync(TestCancellationToken);
+        var schema = new SqlServerSchemaManager(database.ConnectionString);
+        await schema.ApplySchemaPlanAsync("integration", CodeTable(false), SchemaPlanner.Plan(CodeTable(false), null, new SchemaPolicy(), mode), TestCancellationToken);
+        var writer = new SqlServerDestinationWriter(database.ConnectionString);
+        var stateStore = new SqlServerReplicationStateStore(database.ConnectionString);
+        var noDataLoss = mode == SynchronizationMode.NoDataLoss;
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", CodeTable(false), TestCancellationToken, replaceExisting: !noDataLoss, retainDeletedRows: noDataLoss, mode: mode))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage([new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Row", ["code"] = "A-1" })], null, null, false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var replaced = CodeTable(true);
+        var plan = SchemaPlanner.Plan(
+            replaced,
+            await schema.ReadTableAsync(replaced, TestCancellationToken),
+            new SchemaPolicy(),
+            mode,
+            new DateTimeOffset(2026, 9, 30, 0, 0, 0, TimeSpan.Zero));
+        var replacement = Assert.Single(plan.Changes, change => change.Kind == SchemaChangeKind.ReplaceColumn);
+        Assert.Equal(noDataLoss ? "code_replaced_20260930" : null, replacement.NewObjectName);
+        await schema.ApplySchemaPlanAsync("integration", replaced, plan, TestCancellationToken);
+
+        var state = await stateStore.GetTableStateAsync("integration", "account", TestCancellationToken);
+        Assert.Null(state!.DataCheckpoint);
+        var destination = await schema.ReadTableAsync(replaced, TestCancellationToken);
+        Assert.Equal(SourceType.Int32, destination!.Columns.Single(column => string.Equals(column.Name, "code", StringComparison.OrdinalIgnoreCase)).SourceType);
+        Assert.Equal(noDataLoss, destination.Columns.Any(column => string.Equals(column.Name, "code_replaced_20260930", StringComparison.OrdinalIgnoreCase)));
+
+        await using (var session = await writer.BeginInitialSyncAsync(
+            "integration", replaced, TestCancellationToken, replaceExisting: !noDataLoss, retainDeletedRows: noDataLoss, mode: mode))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage([new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Row", ["code"] = 42 })], null, null, false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-2", new(1, 1, 0, 1, 0), TestCancellationToken);
+        }
+
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = noDataLoss
+            ? "SELECT CONCAT([code], N'|', [code_replaced_20260930]) FROM [dbo].[account];"
+            : "SELECT CONCAT([code], N'|') FROM [dbo].[account];";
+        Assert.Equal(noDataLoss ? "42|A-1" : "42|", await command.ExecuteScalarAsync(TestCancellationToken));
+    }
+
     [Fact]
     [Trait("Category", "SqlServerIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()

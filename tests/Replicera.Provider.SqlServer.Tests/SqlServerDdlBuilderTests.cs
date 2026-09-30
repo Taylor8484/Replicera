@@ -102,6 +102,17 @@ public sealed class SqlServerDdlBuilderTests
             SqlServerSchemaManager.BuildRelaxNullability(RequiredColumnTable(), "legacy", "nvarchar(20)"));
     }
 
+    [Fact]
+    public void BuildReplaceColumn_DropsOrRenamesThenAddsColumn()
+    {
+        Assert.Equal(
+            ["ALTER TABLE [dbo].[account] DROP COLUMN [name];", "ALTER TABLE [dbo].[account] ADD [name] nvarchar(100) NULL;"],
+            SqlServerSchemaManager.BuildReplaceColumn(RequiredColumnTable(), "name", null));
+        var preserved = SqlServerSchemaManager.BuildReplaceColumn(RequiredColumnTable(), "name", "name_replaced_20260930");
+        Assert.Equal("EXEC sys.sp_rename N'[dbo].[account].[name]', N'name_replaced_20260930', N'COLUMN';", preserved[0]);
+        Assert.Equal("ALTER TABLE [dbo].[account] ADD [name] nvarchar(100) NULL;", preserved[1]);
+    }
+
     private static TableDefinition RequiredColumnTable() => new(
         "account",
         "accounts",

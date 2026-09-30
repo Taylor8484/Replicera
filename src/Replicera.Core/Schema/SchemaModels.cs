@@ -32,7 +32,8 @@ public enum SchemaChangeKind
     OwnershipConflict,
     RelaxColumnNullability,
     UnsupportedColumnRetained,
-    NarrowerSourceColumn
+    NarrowerSourceColumn,
+    ReplaceColumn
 }
 
 public static class ManagedColumnNames
