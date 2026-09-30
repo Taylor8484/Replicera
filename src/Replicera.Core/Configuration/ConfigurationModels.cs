@@ -106,6 +106,9 @@ public sealed record SchemaPolicy
 
     public SchemaAction ExpandCompatibleColumns { get; init; } = SchemaAction.Automatic;
 
+    // DropColumns, DropTables, and IncompatibleChanges remain readable so existing configuration
+    // files load, but the synchronization mode decides column and table removal and column
+    // replacement.
     public SchemaAction DropColumns { get; init; } = SchemaAction.Automatic;
 
     public SchemaAction DropTables { get; init; } = SchemaAction.Manual;

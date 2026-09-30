@@ -33,8 +33,7 @@
         "columnRenames": {},
         "createTables": "automatic",
         "addColumns": "automatic",
-        "expandCompatibleColumns": "automatic",
-        "incompatibleChanges": "stop"
+        "expandCompatibleColumns": "automatic"
       }
     }
   ]
