@@ -35,6 +35,7 @@ public sealed class DataversePermissionBootstrapperTests
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.AllTables,
+            assignSystemCustomizer: true,
             CancellationToken.None);
 
         Assert.True(result.AllTables);
@@ -85,6 +86,7 @@ public sealed class DataversePermissionBootstrapperTests
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.ForTables(["contact", "account", "Account"]),
+            assignSystemCustomizer: true,
             CancellationToken.None);
 
         Assert.False(result.AllTables);
@@ -126,6 +128,7 @@ public sealed class DataversePermissionBootstrapperTests
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: true,
             CancellationToken.None);
 
         Assert.True(result.RoleCreated);
@@ -166,11 +169,42 @@ public sealed class DataversePermissionBootstrapperTests
         var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: true,
             CancellationToken.None));
 
         Assert.Equal(ErrorCategory.UnsupportedMetadata, error.Category);
         Assert.Contains("rerun", error.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(service.Requests, request => request is AssociateRequest);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WithoutCustomizer_LeavesSystemCustomizerUnassigned()
+    {
+        var businessUnitId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", businessUnitId)),
+            Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(Guid.NewGuid()))),
+            BusinessUnits(businessUnitId),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            Response<CreateResponse>(("id", roleId)),
+            new ReplacePrivilegesRoleResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            new AssociateResponse());
+
+        var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: false,
+            CancellationToken.None);
+
+        Assert.True(result.SystemCustomizerSkipped);
+        Assert.False(result.SystemCustomizerAssigned);
+        var associate = Assert.Single(service.Requests.OfType<AssociateRequest>());
+        Assert.Equal(roleId, Assert.Single(associate.RelatedEntities).Id);
+        Assert.DoesNotContain(
+            service.Requests.OfType<RetrieveMultipleRequest>().Select(request => request.Query).OfType<QueryExpression>(),
+            query => query.Criteria.Conditions.Any(condition => condition.AttributeName == "roletemplateid"));
     }
 
     [Fact]
@@ -184,6 +218,7 @@ public sealed class DataversePermissionBootstrapperTests
         var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.ForTables(["account", "new_missing"]),
+            assignSystemCustomizer: true,
             CancellationToken.None));
 
         Assert.Equal(ErrorCategory.SourceMetadataNotFound, error.Category);

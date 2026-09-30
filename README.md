@@ -13,7 +13,7 @@ The repository contains the CLI, Dataverse adapter, destination providers, autom
 
 The Dataverse pump should use a dedicated application user. Give it System Customizer for metadata operations and organization-level Read on the tables being replicated; it does not require source-row write privileges or System Administrator. See the operations guide for the full role model.
 
-For initial role provisioning, temporarily grant System Administrator and run `replicera source bootstrap-permissions --name <source> --tables-file <path>`, where the file is a JSON array of the table logical names to make readable (see `examples/bootstrap-tables.example.json`). Passing `--all-tables` instead grants organization-level Read on every table in the environment, which exposes all Dataverse data to the pump identity. The command assigns System Customizer and the generated reader role. Remove System Administrator manually after it succeeds and verify access with `inspect` or `sync`.
+For initial role provisioning, temporarily grant System Administrator and run `replicera source bootstrap-permissions --name <source> --tables-file <path>`, where the file is a JSON array of the table logical names to make readable (see `examples/bootstrap-tables.example.json`). Passing `--all-tables` instead grants organization-level Read on every table in the environment, which exposes all Dataverse data to the pump identity. The command assigns System Customizer and the generated reader role; pass `--without-customizer` when change tracking is enabled administratively instead. Remove System Administrator manually after it succeeds and verify access with `inspect` or `sync`.
 
 ## Build
 

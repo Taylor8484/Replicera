@@ -16,6 +16,7 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
     public async Task<PermissionBootstrapResult> ApplyAsync(
         string roleName,
         PermissionScope scope,
+        bool assignSystemCustomizer,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(roleName);
@@ -58,12 +59,16 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             await AssignAsync(who.UserId, assignableRoleId, cancellationToken).ConfigureAwait(false);
         }
 
-        var customizer = await FindRoleByTemplateAsync(SystemCustomizerRoleTemplateId, who.BusinessUnitId, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("The System Customizer role was not found in the application user's business unit.");
-        var customizerAssigned = await IsAssignedAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
-        if (!customizerAssigned)
+        var customizerAssigned = true;
+        if (assignSystemCustomizer)
         {
-            await AssignAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
+            var customizer = await FindRoleByTemplateAsync(SystemCustomizerRoleTemplateId, who.BusinessUnitId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("The System Customizer role was not found in the application user's business unit.");
+            customizerAssigned = await IsAssignedAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
+            if (!customizerAssigned)
+            {
+                await AssignAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         return new PermissionBootstrapResult(
@@ -73,6 +78,7 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             created,
             !assigned,
             !customizerAssigned,
+            !assignSystemCustomizer,
             scope.IsAllTables,
             scope.Tables ?? []);
     }
@@ -242,6 +248,7 @@ public sealed record PermissionBootstrapResult(
     bool RoleCreated,
     bool RoleAssigned,
     bool SystemCustomizerAssigned,
+    bool SystemCustomizerSkipped,
     bool AllTables,
     IReadOnlyList<string> Tables);
 

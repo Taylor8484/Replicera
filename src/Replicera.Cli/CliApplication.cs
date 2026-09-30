@@ -65,6 +65,7 @@ public static class CliApplication
                     GetOption(arguments, "--role-name"),
                     GetOption(arguments, "--tables-file"),
                     HasFlag(arguments, "--all-tables"),
+                    HasFlag(arguments, "--without-customizer"),
                     output,
                     structuredOutput,
                     cancellationToken).ConfigureAwait(false),
@@ -772,7 +773,7 @@ public static class CliApplication
           replicera init [--config <path>]
           replicera source add [--interactive] --name <name> --url <url> --tenant-id <guid> --client-id <guid> --secret-env <variable> [--auth client-secret|certificate] [--certificate-password-env <variable>] [--config <path>]
           replicera source list [--config <path>]
-          replicera source bootstrap-permissions (--tables-file <path>|--all-tables) [--name <source>] [--role-name <role>] [--json] [--config <path>]
+          replicera source bootstrap-permissions (--tables-file <path>|--all-tables) [--name <source>] [--role-name <role>] [--without-customizer] [--json] [--config <path>]
           replicera destination add [--interactive] --name <name> --connection-env <variable> [--provider sqlserver|postgresql|oracle] [--config <path>]
           replicera destination list [--config <path>]
           replicera job add [--interactive] --name <name> --source <source> --destination <destination> --table <table> [--table <table>] [--batch-size <count>] [--mode complete|no-data-loss|reload] [--config <path>]
