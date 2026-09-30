@@ -78,26 +78,36 @@ public sealed class CredentialedDataverseTests(ITestOutputHelper output)
 
     [Fact]
     [Trait("Category", "Credentialed")]
-    public async Task AccountChangeTrackingMetadata_CanBeUpdatedWithoutChangingSetting()
+    public async Task AccountChangeTrackingMetadata_CanBeUpdatedWithoutChangingOtherSettings()
     {
         await using var service = DataverseClientFactory.Create(
             SourceConfiguration(),
             new EnvironmentSecretResolver());
-        var retrieveResponse = (RetrieveEntityResponse)await service.ExecuteAsync(
+        var before = await RetrieveAccountMetadataAsync(service);
+        Assert.True(before.ChangeTrackingEnabled);
+
+        _ = await service.ExecuteAsync(
+            DataverseChangeTrackingManager.BuildEnableRequest(before, "account"),
+            CancellationToken.None);
+
+        var after = await RetrieveAccountMetadataAsync(service);
+        Assert.True(after.ChangeTrackingEnabled);
+        Assert.Equal(before.IsAuditEnabled?.Value, after.IsAuditEnabled?.Value);
+        Assert.Equal(before.IsValidForQueue?.Value, after.IsValidForQueue?.Value);
+        Assert.Equal(before.EntityColor, after.EntityColor);
+        Assert.Equal(before.DisplayName?.UserLocalizedLabel?.Label, after.DisplayName?.UserLocalizedLabel?.Label);
+        Assert.Equal(before.Description?.UserLocalizedLabel?.Label, after.Description?.UserLocalizedLabel?.Label);
+    }
+
+    private static async Task<EntityMetadata> RetrieveAccountMetadataAsync(DataverseService service) =>
+        ((RetrieveEntityResponse)await service.ExecuteAsync(
             new RetrieveEntityRequest
             {
                 LogicalName = "account",
                 EntityFilters = EntityFilters.Entity,
                 RetrieveAsIfPublished = false
             },
-            CancellationToken.None);
-
-        Assert.True(retrieveResponse.EntityMetadata.ChangeTrackingEnabled);
-        retrieveResponse.EntityMetadata.ChangeTrackingEnabled = true;
-        _ = await service.ExecuteAsync(
-            new UpdateEntityRequest { Entity = retrieveResponse.EntityMetadata },
-            CancellationToken.None);
-    }
+            CancellationToken.None)).EntityMetadata;
 
     [Fact]
     [Trait("Category", "Credentialed")]

@@ -33,11 +33,24 @@ public sealed class DataverseChangeTrackingManager(IDataverseService service) : 
                 $"Change tracking cannot be enabled for '{logicalName}': {blockedReason}");
         }
 
-        metadata.ChangeTrackingEnabled = true;
         _ = await service.ExecuteAsync(
-            new UpdateEntityRequest { Entity = metadata },
+            BuildEnableRequest(metadata, logicalName),
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Sends only the setting being changed so other table properties, including customizations
+    /// made after the metadata was read, are left as they are.
+    /// </summary>
+    internal static UpdateEntityRequest BuildEnableRequest(EntityMetadata metadata, string logicalName) => new()
+    {
+        Entity = new EntityMetadata
+        {
+            MetadataId = metadata.MetadataId,
+            LogicalName = metadata.LogicalName ?? logicalName,
+            ChangeTrackingEnabled = true
+        }
+    };
 
     private static string? BlockedReason(EntityMetadata metadata) =>
         metadata.IsCustomizable?.Value == false

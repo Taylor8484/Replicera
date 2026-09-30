@@ -76,11 +76,32 @@ public sealed class DataverseChangeTrackingManagerTests
 
         var update = Assert.Single(service.Requests.OfType<UpdateEntityRequest>());
         Assert.Equal("account", update.Entity.LogicalName);
+        Assert.Equal(MetadataId, update.Entity.MetadataId);
         Assert.True(update.Entity.ChangeTrackingEnabled);
     }
 
+    [Fact]
+    public async Task EnableAsync_SendsOnlyTheChangeTrackingSetting()
+    {
+        var table = Table(enabled: false, customizable: true, canEnable: true);
+        table.IsAuditEnabled = new BooleanManagedProperty(true);
+        table.EntityColor = "#FF0000";
+        var service = new MetadataService(table);
+
+        await new DataverseChangeTrackingManager(service).EnableAsync("account", CancellationToken.None);
+
+        var update = Assert.Single(service.Requests.OfType<UpdateEntityRequest>()).Entity;
+        Assert.Null(update.IsAuditEnabled);
+        Assert.Null(update.IsCustomizable);
+        Assert.Null(update.EntityColor);
+        Assert.False(table.ChangeTrackingEnabled);
+    }
+
+    private static readonly Guid MetadataId = Guid.NewGuid();
+
     private static EntityMetadata Table(bool enabled, bool customizable, bool canEnable) => new()
     {
+        MetadataId = MetadataId,
         LogicalName = "account",
         ChangeTrackingEnabled = enabled,
         IsCustomizable = new BooleanManagedProperty(customizable),
