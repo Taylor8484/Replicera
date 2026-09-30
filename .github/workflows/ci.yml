@@ -113,12 +113,12 @@ jobs:
         with:
           global-json-file: global.json
       - name: Publish framework-dependent artifact
-        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained false --output artifacts/framework-dependent
+        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained false --output artifacts/framework-dependent -p:RestoreLockedMode=true
       - name: Smoke-test framework-dependent artifact
         shell: pwsh
         run: '& (Join-Path "artifacts/framework-dependent" "${{ matrix.executable }}") --help'
       - name: Publish self-contained artifact
-        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/self-contained
+        run: dotnet publish src/Replicera.Cli/Replicera.Cli.csproj --configuration Release --runtime ${{ matrix.runtime }} --self-contained true --output artifacts/self-contained -p:RestoreLockedMode=true
       - name: Smoke-test self-contained artifact
         shell: pwsh
         run: '& (Join-Path "artifacts/self-contained" "${{ matrix.executable }}") --help'

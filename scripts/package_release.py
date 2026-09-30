@@ -58,6 +58,7 @@ def main() -> None:
                 "--output",
                 str(publish),
                 f"-p:Version={args.version}",
+                "-p:RestoreLockedMode=true",
             ],
             cwd=workspace,
             check=True,
