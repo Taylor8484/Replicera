@@ -12,4 +12,6 @@ Acquire a `FOR UPDATE NOWAIT` lock on the managed-table metadata row. Keep targe
 
 ## Consequences
 
+The command-line runner holds a session-scoped `DBMS_LOCK` lock per job and table from before schema inspection until the checkpoint commits, and confirms immediately before commit that the session still holds it; a lost lock rolls back the transaction without advancing the checkpoint. Because `CREATE TABLE` commits implicitly, the managed-table metadata row is committed before the table is created, so a failure after the DDL leaves a table Replicera still recognizes as its own on the next run. Metadata creation and upgrades are serialized with a `DBMS_LOCK` lock and skipped when the metadata is already current.
+
 Do not use `OracleBulkCopy`: its work is independent of application transactions and cannot preserve Replicera's atomic checkpoint boundary. Array binding keeps page writes set-based while participating in the active transaction. Integration tests must cover rollback, lock exclusion, supported value families, schema safety, and checkpoint/metric commits against Oracle AI Database Free 26ai.
