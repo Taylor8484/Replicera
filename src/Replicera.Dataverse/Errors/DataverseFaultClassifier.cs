@@ -18,6 +18,12 @@ internal static class DataverseFaultClassifier
         unchecked((int)0x80072493)  // InvalidEntityLogicalName
     ];
 
+    private static readonly HashSet<int> PrivilegeErrorCodes =
+    [
+        unchecked((int)0x80040220), // PrivilegeDenied
+        unchecked((int)0x80042F06)  // SecLib access check failure for a missing privilege
+    ];
+
     private static readonly HashSet<int> ServiceProtectionErrorCodes =
     [
         -2147015902,
@@ -45,11 +51,18 @@ internal static class DataverseFaultClassifier
                 "Dataverse confirmed that the requested table does not exist in published metadata.");
         }
 
-        if (ServiceProtectionErrorCodes.Contains(fault.ErrorCode) || TryGetHttpStatus(fault) == 429)
+        if (IsThrottled(fault))
         {
             return new RepliceraException(
                 ErrorCategory.Throttling,
                 "Dataverse service-protection limits remained active after the configured retries.");
+        }
+
+        if (PrivilegeErrorCodes.Contains(fault.ErrorCode))
+        {
+            return new RepliceraException(
+                ErrorCategory.Authorization,
+                "The Dataverse identity does not have permission to perform the requested operation.");
         }
 
         return TryGetHttpStatus(fault) switch
@@ -68,6 +81,20 @@ internal static class DataverseFaultClassifier
                 "Dataverse rejected the requested operation.")
         };
     }
+
+    /// <summary>
+    /// Returns whether a fault reports a condition that can clear on its own: service-protection
+    /// throttling, a request timeout, or a server-side failure. Faults without such evidence are
+    /// treated as permanent so that rejected operations are reported instead of retried.
+    /// </summary>
+    internal static bool IsTransient(OrganizationServiceFault fault)
+    {
+        ArgumentNullException.ThrowIfNull(fault);
+        return IsThrottled(fault) || TryGetHttpStatus(fault) is 408 or >= 500;
+    }
+
+    internal static bool IsThrottled(OrganizationServiceFault fault) =>
+        ServiceProtectionErrorCodes.Contains(fault.ErrorCode) || TryGetHttpStatus(fault) == 429;
 
     private static int? TryGetHttpStatus(OrganizationServiceFault fault)
     {

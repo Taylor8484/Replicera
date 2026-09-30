@@ -1,6 +1,7 @@
 using System.ServiceModel;
 using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
 using Replicera.Core.Errors;
 
 namespace Replicera.Dataverse.Tests;
@@ -81,6 +82,85 @@ public sealed class DataverseServiceRetryTests
 
         Assert.Equal(ErrorCategory.Authorization, exception.Category);
         Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DoesNotRetryFaultWithoutTransientEvidence()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                throw new FaultException<OrganizationServiceFault>(new OrganizationServiceFault { ErrorCode = unchecked((int)0x80040216) });
+            },
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.SourceConnectivity, exception.Category);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReportsPrivilegeDeniedAsAuthorizationWithoutRetry()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                throw new FaultException<OrganizationServiceFault>(new OrganizationServiceFault { ErrorCode = unchecked((int)0x80040220) });
+            },
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new WhoAmIRequest(), CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.Authorization, exception.Category);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_DoesNotRepeatNonIdempotentRequestAfterServerFailure()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                throw new FaultException<OrganizationServiceFault>(Fault(503));
+            },
+            (_, _) => throw new InvalidOperationException("Delay should not be called."));
+
+        var exception = await Assert.ThrowsAsync<RepliceraException>(
+            () => service.ExecuteAsync(new CreateRequest { Target = new Entity("role") }, CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.SourceConnectivity, exception.Category);
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_RepeatsNonIdempotentRequestWhenThrottled()
+    {
+        var attempts = 0;
+        var service = new DataverseService(
+            (_, _) =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    throw new FaultException<OrganizationServiceFault>(Fault(429));
+                }
+
+                return Task.FromResult<OrganizationResponse>(new AssociateResponse());
+            },
+            (_, _) => Task.CompletedTask);
+
+        _ = await service.ExecuteAsync(new AssociateRequest(), CancellationToken.None);
+
+        Assert.Equal(2, attempts);
     }
 
     private static OrganizationServiceFault Fault(int statusCode)

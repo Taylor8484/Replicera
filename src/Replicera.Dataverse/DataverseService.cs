@@ -1,6 +1,7 @@
 using System.ServiceModel;
 using Microsoft.PowerPlatform.Dataverse.Client;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
 using Replicera.Dataverse.Errors;
 
 namespace Replicera.Dataverse;
@@ -53,7 +54,7 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
             catch (FaultException<OrganizationServiceFault> exception)
             {
                 var classified = DataverseFaultClassifier.Classify(request, exception.Detail);
-                if (retry >= maxRetryCount || classified.Category is not (Core.Errors.ErrorCategory.Throttling or Core.Errors.ErrorCategory.SourceConnectivity))
+                if (retry >= maxRetryCount || !CanRetry(request, exception.Detail))
                 {
                     throw classified;
                 }
@@ -64,6 +65,16 @@ public sealed class DataverseService : IDataverseService, IAsyncDisposable
             }
         }
     }
+
+    // A throttled request is rejected before Dataverse processes it, so it is always safe to
+    // repeat. Other transient failures may occur after the server applied the change, so only
+    // requests that can be repeated without a second effect are retried in that case.
+    private static bool CanRetry(OrganizationRequest request, OrganizationServiceFault fault) =>
+        DataverseFaultClassifier.IsThrottled(fault)
+        || (DataverseFaultClassifier.IsTransient(fault) && IsIdempotent(request));
+
+    private static bool IsIdempotent(OrganizationRequest request) =>
+        request is not (CreateRequest or AssociateRequest);
 
     public ValueTask DisposeAsync()
     {
