@@ -1,6 +1,7 @@
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
 using Replicera.Core.Abstractions;
+using Replicera.Core.Errors;
 
 namespace Replicera.Dataverse.ChangeTracking;
 
@@ -12,11 +13,8 @@ public sealed class DataverseChangeTrackingManager(IDataverseService service) : 
     {
         var metadata = await RetrieveAsync(logicalName, cancellationToken).ConfigureAwait(false);
         var enabled = metadata.ChangeTrackingEnabled == true;
-        var canEnable = metadata.IsCustomizable?.Value != false;
-        return new ChangeTrackingStatus(
-            enabled,
-            !enabled && canEnable,
-            enabled || canEnable ? null : "Dataverse reports that the table cannot be customized.");
+        var blockedReason = enabled ? null : BlockedReason(metadata);
+        return new ChangeTrackingStatus(enabled, !enabled && blockedReason is null, blockedReason);
     }
 
     public async Task EnableAsync(string logicalName, CancellationToken cancellationToken)
@@ -27,16 +25,39 @@ public sealed class DataverseChangeTrackingManager(IDataverseService service) : 
             return;
         }
 
-        if (metadata.IsCustomizable?.Value == false)
+        var blockedReason = BlockedReason(metadata);
+        if (blockedReason is not null)
         {
-            throw new InvalidOperationException($"Change tracking cannot be enabled for '{logicalName}'.");
+            throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                $"Change tracking cannot be enabled for '{logicalName}': {blockedReason}");
         }
 
-        metadata.ChangeTrackingEnabled = true;
         _ = await service.ExecuteAsync(
-            new UpdateEntityRequest { Entity = metadata },
+            BuildEnableRequest(metadata, logicalName),
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Sends only the setting being changed so other table properties, including customizations
+    /// made after the metadata was read, are left as they are.
+    /// </summary>
+    internal static UpdateEntityRequest BuildEnableRequest(EntityMetadata metadata, string logicalName) => new()
+    {
+        Entity = new EntityMetadata
+        {
+            MetadataId = metadata.MetadataId,
+            LogicalName = metadata.LogicalName ?? logicalName,
+            ChangeTrackingEnabled = true
+        }
+    };
+
+    private static string? BlockedReason(EntityMetadata metadata) =>
+        metadata.IsCustomizable?.Value == false
+            ? "Dataverse reports that the table cannot be customized."
+            : metadata.CanChangeTrackingBeEnabled?.Value == false
+                ? "Dataverse does not allow change tracking to be enabled for this table."
+                : null;
 
     private async Task<EntityMetadata> RetrieveAsync(
         string logicalName,

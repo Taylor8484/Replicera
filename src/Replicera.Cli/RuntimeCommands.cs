@@ -23,6 +23,7 @@ internal static class RuntimeCommands
         string? roleName,
         string? tablesFile,
         bool allTables,
+        bool withoutCustomizer,
         TextWriter output,
         bool structuredOutput,
         CancellationToken cancellationToken)
@@ -49,6 +50,7 @@ internal static class RuntimeCommands
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             roleName ?? DataversePermissionBootstrapper.DefaultRoleName,
             scope,
+            assignSystemCustomizer: !withoutCustomizer,
             cancellationToken).ConfigureAwait(false);
         if (structuredOutput)
         {
@@ -60,8 +62,16 @@ internal static class RuntimeCommands
                 ? $"Role '{result.RoleName}' {(result.RoleCreated ? "created" : "updated")} with organization-level Read on all {result.TableReadPrivileges} tables in the environment."
                 : $"Role '{result.RoleName}' {(result.RoleCreated ? "created" : "updated")} with organization-level Read on {result.Tables.Count} tables: {string.Join(", ", result.Tables)}.").ConfigureAwait(false);
             await output.WriteLineAsync(result.RoleAssigned ? "Role assigned to the current application user." : "Role was already assigned to the current application user.").ConfigureAwait(false);
-            await output.WriteLineAsync(result.SystemCustomizerAssigned ? "System Customizer assigned to the current application user." : "System Customizer was already assigned to the current application user.").ConfigureAwait(false);
-            await output.WriteLineAsync("Confirm System Customizer is assigned, remove temporary System Administrator, then run inspect or sync.").ConfigureAwait(false);
+            if (result.SystemCustomizerSkipped)
+            {
+                await output.WriteLineAsync("System Customizer was not assigned. Enable change tracking on the replicated tables administratively and set sync.enableChangeTracking to false for jobs that use this source.").ConfigureAwait(false);
+                await output.WriteLineAsync("Remove temporary System Administrator, then run inspect or sync.").ConfigureAwait(false);
+            }
+            else
+            {
+                await output.WriteLineAsync(result.SystemCustomizerAssigned ? "System Customizer assigned to the current application user." : "System Customizer was already assigned to the current application user.").ConfigureAwait(false);
+                await output.WriteLineAsync("Confirm System Customizer is assigned, remove temporary System Administrator, then run inspect or sync.").ConfigureAwait(false);
+            }
         }
 
         return (int)ExitCode.Success;
@@ -264,7 +274,14 @@ internal static class RuntimeCommands
             var trackingStatus = await tracking.GetStatusAsync(logicalName, cancellationToken).ConfigureAwait(false);
             if (!trackingStatus.IsEnabled)
             {
-                if (!trackingStatus.CanEnable || !context.Job.Sync.EnableChangeTracking)
+                if (!trackingStatus.CanEnable)
+                {
+                    throw new RepliceraException(
+                        ErrorCategory.UnsupportedMetadata,
+                        $"Change tracking is disabled for '{logicalName}' and cannot be enabled: {trackingStatus.BlockedReason}");
+                }
+
+                if (!context.Job.Sync.EnableChangeTracking)
                 {
                     throw new RepliceraException(
                         ErrorCategory.UnsupportedMetadata,

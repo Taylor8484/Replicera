@@ -3,6 +3,7 @@ using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
+using Microsoft.Xrm.Sdk.Query;
 using Replicera.Core.Errors;
 using Replicera.Dataverse.Security;
 
@@ -21,6 +22,7 @@ public sealed class DataversePermissionBootstrapperTests
         var service = new QueueService(
             Response<WhoAmIResponse>(("UserId", userId), ("BusinessUnitId", businessUnitId)),
             Response<RetrieveAllEntitiesResponse>(("EntityMetadata", new[] { TableWithReadPrivilege(privilegeId) })),
+            BusinessUnits(businessUnitId),
             Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
             Response<CreateResponse>(("id", roleId)),
             new ReplacePrivilegesRoleResponse(),
@@ -33,6 +35,7 @@ public sealed class DataversePermissionBootstrapperTests
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.AllTables,
+            assignSystemCustomizer: true,
             CancellationToken.None);
 
         Assert.True(result.AllTables);
@@ -42,17 +45,17 @@ public sealed class DataversePermissionBootstrapperTests
         Assert.Equal(1, result.TableReadPrivileges);
         var metadataRequest = Assert.IsType<RetrieveAllEntitiesRequest>(service.Requests[1]);
         Assert.True(metadataRequest.EntityFilters.HasFlag(EntityFilters.Privileges));
-        var replace = Assert.IsType<ReplacePrivilegesRoleRequest>(service.Requests[4]);
+        var replace = Assert.IsType<ReplacePrivilegesRoleRequest>(service.Requests[5]);
         var granted = Assert.Single(replace.Privileges);
         Assert.Equal(privilegeId, granted.PrivilegeId);
         Assert.Equal(PrivilegeDepth.Global, granted.Depth);
-        var associate = Assert.IsType<AssociateRequest>(service.Requests[6]);
+        var associate = Assert.IsType<AssociateRequest>(service.Requests[7]);
         Assert.Equal(userId, associate.Target.Id);
         Assert.Equal(roleId, Assert.Single(associate.RelatedEntities).Id);
-        var customizerAssociate = Assert.IsType<AssociateRequest>(service.Requests[9]);
+        var customizerAssociate = Assert.IsType<AssociateRequest>(service.Requests[10]);
         Assert.Equal(customizerRoleId, Assert.Single(customizerAssociate.RelatedEntities).Id);
-        var customizerQuery = Assert.IsType<RetrieveMultipleRequest>(service.Requests[7]);
-        var query = Assert.IsType<Microsoft.Xrm.Sdk.Query.QueryExpression>(customizerQuery.Query);
+        var customizerQuery = Assert.IsType<RetrieveMultipleRequest>(service.Requests[8]);
+        var query = Assert.IsType<QueryExpression>(customizerQuery.Query);
         Assert.Contains(
             query.Criteria.Conditions,
             condition => condition.AttributeName == "roletemplateid" &&
@@ -72,6 +75,7 @@ public sealed class DataversePermissionBootstrapperTests
             Response<WhoAmIResponse>(("UserId", userId), ("BusinessUnitId", businessUnitId)),
             Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(accountRead))),
             Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(contactRead))),
+            BusinessUnits(businessUnitId),
             Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
             Response<CreateResponse>(("id", roleId)),
             new ReplacePrivilegesRoleResponse(),
@@ -82,6 +86,7 @@ public sealed class DataversePermissionBootstrapperTests
         var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.ForTables(["contact", "account", "Account"]),
+            assignSystemCustomizer: true,
             CancellationToken.None);
 
         Assert.False(result.AllTables);
@@ -99,6 +104,152 @@ public sealed class DataversePermissionBootstrapperTests
     }
 
     [Fact]
+    public async Task ApplyAsync_ForUserInChildBusinessUnit_CreatesRoleInRootAndAssignsTheCopy()
+    {
+        var userId = Guid.NewGuid();
+        var rootBusinessUnitId = Guid.NewGuid();
+        var childBusinessUnitId = Guid.NewGuid();
+        var rootRoleId = Guid.NewGuid();
+        var copiedRoleId = Guid.NewGuid();
+        var customizerRoleId = Guid.NewGuid();
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", userId), ("BusinessUnitId", childBusinessUnitId)),
+            Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(Guid.NewGuid()))),
+            BusinessUnits(rootBusinessUnitId),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            Response<CreateResponse>(("id", rootRoleId)),
+            new ReplacePrivilegesRoleResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", copiedRoleId)]))),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            new AssociateResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", customizerRoleId)]))),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", customizerRoleId)]))));
+
+        var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: true,
+            CancellationToken.None);
+
+        Assert.True(result.RoleCreated);
+        Assert.True(result.RoleAssigned);
+        Assert.Equal(rootRoleId, result.RoleId);
+        var rootQuery = Assert.IsType<QueryExpression>(Assert.IsType<RetrieveMultipleRequest>(service.Requests[2]).Query);
+        Assert.Equal("businessunit", rootQuery.EntityName);
+        Assert.Contains(rootQuery.Criteria.Conditions, condition =>
+            condition.AttributeName == "parentbusinessunitid" && condition.Operator == ConditionOperator.Null);
+        var roleQuery = Assert.IsType<QueryExpression>(Assert.IsType<RetrieveMultipleRequest>(service.Requests[3]).Query);
+        Assert.Contains(roleQuery.Criteria.Conditions, condition =>
+            condition.AttributeName == "businessunitid" && Assert.Single(condition.Values).Equals(rootBusinessUnitId));
+        var create = Assert.Single(service.Requests.OfType<CreateRequest>());
+        Assert.Equal(rootBusinessUnitId, create.Target.GetAttributeValue<EntityReference>("businessunitid").Id);
+        Assert.Equal(rootRoleId, Assert.Single(service.Requests.OfType<ReplacePrivilegesRoleRequest>()).RoleId);
+        var copyQuery = Assert.IsType<QueryExpression>(Assert.IsType<RetrieveMultipleRequest>(service.Requests[6]).Query);
+        Assert.Contains(copyQuery.Criteria.Conditions, condition =>
+            condition.AttributeName == "parentrootroleid" && Assert.Single(condition.Values).Equals(rootRoleId));
+        Assert.Contains(copyQuery.Criteria.Conditions, condition =>
+            condition.AttributeName == "businessunitid" && Assert.Single(condition.Values).Equals(childBusinessUnitId));
+        var associate = Assert.Single(service.Requests.OfType<AssociateRequest>());
+        Assert.Equal(userId, associate.Target.Id);
+        Assert.Equal(copiedRoleId, Assert.Single(associate.RelatedEntities).Id);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WhenRoleCopyIsMissingInChildBusinessUnit_ReportsMetadataError()
+    {
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", Guid.NewGuid())),
+            Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(Guid.NewGuid()))),
+            BusinessUnits(Guid.NewGuid()),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            Response<CreateResponse>(("id", Guid.NewGuid())),
+            new ReplacePrivilegesRoleResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: true,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, error.Category);
+        Assert.Contains("rerun", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(service.Requests, request => request is AssociateRequest);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WithoutCustomizer_LeavesSystemCustomizerUnassigned()
+    {
+        var businessUnitId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", businessUnitId)),
+            Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(Guid.NewGuid()))),
+            BusinessUnits(businessUnitId),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            Response<CreateResponse>(("id", roleId)),
+            new ReplacePrivilegesRoleResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())),
+            new AssociateResponse());
+
+        var result = await new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: false,
+            CancellationToken.None);
+
+        Assert.True(result.SystemCustomizerSkipped);
+        Assert.False(result.SystemCustomizerAssigned);
+        var associate = Assert.Single(service.Requests.OfType<AssociateRequest>());
+        Assert.Equal(roleId, Assert.Single(associate.RelatedEntities).Id);
+        Assert.DoesNotContain(
+            service.Requests.OfType<RetrieveMultipleRequest>().Select(request => request.Query).OfType<QueryExpression>(),
+            query => query.Criteria.Conditions.Any(condition => condition.AttributeName == "roletemplateid"));
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WhenSystemCustomizerIsMissing_ReportsMetadataError()
+    {
+        var businessUnitId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", businessUnitId)),
+            Response<RetrieveEntityResponse>(("EntityMetadata", TableWithReadPrivilege(Guid.NewGuid()))),
+            BusinessUnits(businessUnitId),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", roleId)]))),
+            Response<RetrieveRolePrivilegesRoleResponse>(("RolePrivileges", Array.Empty<RolePrivilege>())),
+            new ReplacePrivilegesRoleResponse(),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([new Entity("role", roleId)]))),
+            Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection())));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.ForTables(["account"]),
+            assignSystemCustomizer: true,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, error.Category);
+        Assert.Contains("System Customizer", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WhenNoReadPrivilegesExist_ReportsMetadataErrorBeforeChangingRole()
+    {
+        var service = new QueueService(
+            Response<WhoAmIResponse>(("UserId", Guid.NewGuid()), ("BusinessUnitId", Guid.NewGuid())),
+            Response<RetrieveAllEntitiesResponse>(("EntityMetadata", Array.Empty<EntityMetadata>())));
+
+        var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
+            DataversePermissionBootstrapper.DefaultRoleName,
+            PermissionScope.AllTables,
+            assignSystemCustomizer: true,
+            CancellationToken.None));
+
+        Assert.Equal(ErrorCategory.UnsupportedMetadata, error.Category);
+        Assert.Equal(2, service.Requests.Count);
+    }
+
+    [Fact]
     public async Task ApplyAsync_WithUnknownTable_FailsBeforeChangingRole()
     {
         var service = new QueueService(
@@ -109,6 +260,7 @@ public sealed class DataversePermissionBootstrapperTests
         var error = await Assert.ThrowsAsync<RepliceraException>(() => new DataversePermissionBootstrapper(service).ApplyAsync(
             DataversePermissionBootstrapper.DefaultRoleName,
             PermissionScope.ForTables(["account", "new_missing"]),
+            assignSystemCustomizer: true,
             CancellationToken.None));
 
         Assert.Equal(ErrorCategory.SourceMetadataNotFound, error.Category);
@@ -122,6 +274,9 @@ public sealed class DataversePermissionBootstrapperTests
         Assert.Throws<ArgumentException>(() => PermissionScope.ForTables([]));
         Assert.Throws<ArgumentException>(() => PermissionScope.ForTables(["account", " "]));
     }
+
+    private static RetrieveMultipleResponse BusinessUnits(params Guid[] ids) =>
+        Response<RetrieveMultipleResponse>(("EntityCollection", new EntityCollection([.. ids.Select(id => new Entity("businessunit", id))])));
 
     private static EntityMetadata TableWithReadPrivilege(Guid privilegeId)
     {

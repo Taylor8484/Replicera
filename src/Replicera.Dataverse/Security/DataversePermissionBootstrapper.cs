@@ -16,6 +16,7 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
     public async Task<PermissionBootstrapResult> ApplyAsync(
         string roleName,
         PermissionScope scope,
+        bool assignSystemCustomizer,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(roleName);
@@ -26,9 +27,12 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             ? await GetAllTableReadPrivilegesAsync(cancellationToken).ConfigureAwait(false)
             : await GetTableReadPrivilegesAsync(scope.Tables!, cancellationToken).ConfigureAwait(false);
 
-        var role = await FindRoleAsync(roleName, who.BusinessUnitId, cancellationToken).ConfigureAwait(false);
+        // Custom roles can only be created in the root business unit. Dataverse copies them into every
+        // child business unit, and a user can only be assigned the copy in their own business unit.
+        var rootBusinessUnitId = await GetRootBusinessUnitIdAsync(cancellationToken).ConfigureAwait(false);
+        var role = await FindRoleAsync(roleName, rootBusinessUnitId, cancellationToken).ConfigureAwait(false);
         var created = role is null;
-        var roleId = role?.Id ?? await CreateRoleAsync(roleName, who.BusinessUnitId, cancellationToken).ConfigureAwait(false);
+        var roleId = role?.Id ?? await CreateRoleAsync(roleName, rootBusinessUnitId, cancellationToken).ConfigureAwait(false);
         var current = created
             ? []
             : ((RetrieveRolePrivilegesRoleResponse)await service.ExecuteAsync(
@@ -46,18 +50,27 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             new ReplacePrivilegesRoleRequest { RoleId = roleId, Privileges = merged },
             cancellationToken).ConfigureAwait(false);
 
-        var assigned = await IsAssignedAsync(who.UserId, roleId, cancellationToken).ConfigureAwait(false);
+        var assignableRoleId = who.BusinessUnitId == rootBusinessUnitId
+            ? roleId
+            : await FindInheritedRoleIdAsync(roleId, roleName, who.BusinessUnitId, cancellationToken).ConfigureAwait(false);
+        var assigned = await IsAssignedAsync(who.UserId, assignableRoleId, cancellationToken).ConfigureAwait(false);
         if (!assigned)
         {
-            await AssignAsync(who.UserId, roleId, cancellationToken).ConfigureAwait(false);
+            await AssignAsync(who.UserId, assignableRoleId, cancellationToken).ConfigureAwait(false);
         }
 
-        var customizer = await FindRoleByTemplateAsync(SystemCustomizerRoleTemplateId, who.BusinessUnitId, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("The System Customizer role was not found in the application user's business unit.");
-        var customizerAssigned = await IsAssignedAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
-        if (!customizerAssigned)
+        var customizerAssigned = true;
+        if (assignSystemCustomizer)
         {
-            await AssignAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
+            var customizer = await FindRoleByTemplateAsync(SystemCustomizerRoleTemplateId, who.BusinessUnitId, cancellationToken).ConfigureAwait(false)
+                ?? throw new RepliceraException(
+                    ErrorCategory.UnsupportedMetadata,
+                    "The System Customizer role was not found in the application user's business unit.");
+            customizerAssigned = await IsAssignedAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
+            if (!customizerAssigned)
+            {
+                await AssignAsync(who.UserId, customizer.Id, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         return new PermissionBootstrapResult(
@@ -67,6 +80,7 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             created,
             !assigned,
             !customizerAssigned,
+            !assignSystemCustomizer,
             scope.IsAllTables,
             scope.Tables ?? []);
     }
@@ -86,7 +100,9 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
             .OrderBy(privilege => privilege.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         return reads.Length == 0
-            ? throw new InvalidOperationException("Dataverse returned no organization-level table Read privileges; the reader role was not changed.")
+            ? throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                "Dataverse returned no organization-level table Read privileges; the reader role was not changed.")
             : reads;
     }
 
@@ -145,6 +161,36 @@ public sealed class DataversePermissionBootstrapper(IDataverseService service)
 
     private static bool IsGlobalRead(SecurityPrivilegeMetadata privilege) =>
         privilege.PrivilegeType == PrivilegeType.Read && privilege.CanBeGlobal;
+
+    private async Task<Guid> GetRootBusinessUnitIdAsync(CancellationToken cancellationToken)
+    {
+        var query = new QueryExpression("businessunit") { ColumnSet = new ColumnSet("businessunitid") };
+        query.Criteria.AddCondition("parentbusinessunitid", ConditionOperator.Null);
+        var response = (RetrieveMultipleResponse)await service.ExecuteAsync(
+            new RetrieveMultipleRequest { Query = query }, cancellationToken).ConfigureAwait(false);
+        return response.EntityCollection.Entities.Count == 1
+            ? response.EntityCollection.Entities[0].Id
+            : throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                "The root business unit could not be determined; the reader role was not changed.");
+    }
+
+    private async Task<Guid> FindInheritedRoleIdAsync(
+        Guid rootRoleId,
+        string roleName,
+        Guid businessUnitId,
+        CancellationToken cancellationToken)
+    {
+        var query = new QueryExpression("role") { ColumnSet = new ColumnSet("roleid") };
+        query.Criteria.AddCondition("parentrootroleid", ConditionOperator.Equal, rootRoleId);
+        query.Criteria.AddCondition("businessunitid", ConditionOperator.Equal, businessUnitId);
+        var response = (RetrieveMultipleResponse)await service.ExecuteAsync(
+            new RetrieveMultipleRequest { Query = query }, cancellationToken).ConfigureAwait(false);
+        return response.EntityCollection.Entities.SingleOrDefault()?.Id
+            ?? throw new RepliceraException(
+                ErrorCategory.UnsupportedMetadata,
+                $"The role '{roleName}' was updated in the root business unit, but its copy in the application user's business unit was not found; rerun the command once Dataverse has copied the role.");
+    }
 
     private async Task<Entity?> FindRoleAsync(string roleName, Guid businessUnitId, CancellationToken cancellationToken)
     {
@@ -206,6 +252,7 @@ public sealed record PermissionBootstrapResult(
     bool RoleCreated,
     bool RoleAssigned,
     bool SystemCustomizerAssigned,
+    bool SystemCustomizerSkipped,
     bool AllTables,
     IReadOnlyList<string> Tables);
 

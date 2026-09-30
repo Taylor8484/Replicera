@@ -40,6 +40,29 @@ public sealed class DataverseClientFactoryTests
             (_, _, _, _) => 0));
     }
 
+    [Fact]
+    public void CreateCertificateClient_DisposesCertificateWhenClientCannotBeCreated()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=replicera-test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var generated = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddHours(1));
+        var pkcs12 = Convert.ToBase64String(generated.Export(X509ContentType.Pkcs12));
+        X509Certificate2? loaded = null;
+
+        _ = Assert.Throws<InvalidOperationException>(() => DataverseClientFactory.CreateCertificateClient<int>(
+            Source(),
+            new UnusedSecretResolver(),
+            pkcs12,
+            (certificate, _, _, _) =>
+            {
+                loaded = certificate;
+                throw new InvalidOperationException("Client construction failed.");
+            }));
+
+        Assert.NotNull(loaded);
+        Assert.Equal(IntPtr.Zero, loaded.Handle);
+    }
+
     private static SourceConfiguration Source() => new()
     {
         Name = "test",
