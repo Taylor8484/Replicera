@@ -266,6 +266,70 @@ public sealed class PostgreSqlProviderIntegrationTests
 
     [Fact]
     [Trait("Category", "PostgreSqlIntegration")]
+    public async Task ColumnThatBecomesUnsupported_IsRetainedWithExistingValues()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        if (database is null)
+        {
+            return;
+        }
+
+        static TableDefinition CodesTable(bool supported) => new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition { LogicalName = "name", SourceType = SourceType.String, IsNullable = true, MaxLength = 100 },
+                new ColumnDefinition
+                {
+                    LogicalName = "legacycode",
+                    SourceType = SourceType.String,
+                    IsNullable = true,
+                    MaxLength = 20,
+                    UnsupportedReason = supported ? null : "Dataverse attribute 'legacycode' is not valid for read operations."
+                }
+            ]);
+        await PrepareTableAsync(database.ConnectionString, CodesTable(true));
+        var schema = new PostgreSqlSchemaManager(database.ConnectionString);
+        var writer = new PostgreSqlDestinationWriter(database.ConnectionString);
+        var id = Guid.NewGuid();
+        await using (var session = await writer.BeginInitialSyncAsync("integration", CodesTable(true), TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "First", ["legacycode"] = "KEEP" })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-1", new(1, 1, 1, 0, 0), TestCancellationToken);
+        }
+
+        var unsupported = CodesTable(false);
+        var plan = SchemaPlanner.Plan(unsupported, await schema.ReadTableAsync(unsupported, TestCancellationToken), new SchemaPolicy());
+        Assert.Equal(SchemaChangeKind.UnsupportedColumnRetained, Assert.Single(plan.Changes).Kind);
+        await schema.ApplySchemaPlanAsync("integration", unsupported, plan, TestCancellationToken);
+        await using (var session = await writer.BeginIncrementalSyncAsync("integration", unsupported, "checkpoint-1", TestCancellationToken))
+        {
+            _ = await session.ApplyPageAsync(
+                new SourcePage(
+                    [new SourceRecord(id, ChangeKind.Upsert, new Dictionary<string, object?> { ["name"] = "Updated" })],
+                    null,
+                    null,
+                    false),
+                TestCancellationToken);
+            await session.CommitAsync("checkpoint-2", new(1, 1, 0, 1, 0), TestCancellationToken);
+        }
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync(TestCancellationToken);
+        await using var command = new NpgsqlCommand("SELECT name || '|' || legacycode FROM public.account;", connection);
+        Assert.Equal("Updated|KEEP", await command.ExecuteScalarAsync(TestCancellationToken));
+    }
+
+    [Fact]
+    [Trait("Category", "PostgreSqlIntegration")]
     public async Task ConcurrentSession_ForSameJobAndTableIsRejected()
     {
         await using var database = await TestDatabase.CreateAsync();

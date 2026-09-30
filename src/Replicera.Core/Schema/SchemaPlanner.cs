@@ -200,8 +200,27 @@ public static class SchemaPlanner
                 false));
         }
 
+        // A column that still exists in the source but can no longer be replicated keeps its
+        // destination column and existing values; it is reported rather than dropped.
+        var unsupportedSourceColumnNames = source.Columns
+            .Where(column => !column.IsSupported)
+            .Select(column => column.LogicalName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var destinationColumn in destination.Columns.Where(column =>
                      !sourceColumnNames.Contains(column.Name)
+                     && unsupportedSourceColumnNames.Contains(column.Name)))
+        {
+            changes.Add(new SchemaChange(
+                SchemaChangeKind.UnsupportedColumnRetained,
+                destinationColumn.Name,
+                $"Source column '{destinationColumn.Name}' is no longer supported for replication; retain the destination column without further updates.",
+                false,
+                false));
+        }
+
+        foreach (var destinationColumn in destination.Columns.Where(column =>
+                     !sourceColumnNames.Contains(column.Name)
+                     && !unsupportedSourceColumnNames.Contains(column.Name)
                      && !renamedDestinationColumns.Contains(column.Name)))
         {
             var drop = mode is SynchronizationMode.Complete or SynchronizationMode.Reload;

@@ -485,6 +485,45 @@ public sealed class SchemaPlannerTests
         ],
         true);
 
+    [Theory]
+    [InlineData(SynchronizationMode.Complete)]
+    [InlineData(SynchronizationMode.NoDataLoss)]
+    public void Plan_RetainsColumnThatBecameUnsupportedInsteadOfDroppingIt(SynchronizationMode mode)
+    {
+        var source = new TableDefinition(
+            "account",
+            "accounts",
+            "account",
+            [
+                new ColumnDefinition { LogicalName = "accountid", SourceType = SourceType.Guid, IsPrimaryKey = true },
+                new ColumnDefinition
+                {
+                    LogicalName = "formerlysupported",
+                    SourceType = SourceType.String,
+                    MaxLength = 100,
+                    UnsupportedReason = "Dataverse attribute 'formerlysupported' is not valid for read operations."
+                }
+            ]);
+        var destination = new DestinationTable(
+            "dbo",
+            "account",
+            [
+                new DestinationColumn("accountid", SourceType.Guid, false),
+                new DestinationColumn("formerlysupported", SourceType.String, true, 100),
+                new DestinationColumn(ManagedColumnNames.DataLoadDate, SourceType.DateTime, true),
+                new DestinationColumn(ManagedColumnNames.SourceRemoveDate, SourceType.DateTime, true)
+            ],
+            true);
+
+        var plan = SchemaPlanner.Plan(source, destination, new SchemaPolicy(), mode);
+
+        var retained = Assert.Single(plan.Changes, change => change.ObjectName == "formerlysupported");
+        Assert.Equal(SchemaChangeKind.UnsupportedColumnRetained, retained.Kind);
+        Assert.False(retained.IsAutomatic);
+        Assert.False(retained.IsBlocking);
+        Assert.DoesNotContain(plan.Changes, change => change.Kind == SchemaChangeKind.DropColumn && change.ObjectName == "formerlysupported");
+    }
+
     private static TableDefinition SourceTable(bool includeNumber = false)
     {
         var columns = new List<ColumnDefinition>
