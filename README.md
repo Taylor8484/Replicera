@@ -1,6 +1,8 @@
 # Replicera
 
-Replicera is an early-stage, self-hosted .NET CLI for maintaining relational mirrors of selected Microsoft Dataverse tables. SQL Server, PostgreSQL, and Oracle are supported destination providers.
+Replicera is a self-hosted .NET CLI for maintaining relational mirrors of selected Microsoft Dataverse tables. SQL Server, PostgreSQL, and Oracle are supported destination providers.
+
+Replicera v0.1 is in release-candidate testing. The current pre-release, [`v0.1.0-rc.1`](https://github.com/Taylor8484/Replicera/releases/tag/v0.1.0-rc.1), provides self-contained Linux x64 and Windows x64 packages. See [Status](#status) for what remains before v0.1.0.
 
 The repository contains the CLI, Dataverse adapter, destination providers, automated tests, operations documentation, and architecture decisions.
 
@@ -30,11 +32,11 @@ Published builds use the executable name `replicera`. Run `replicera --version` 
 
 ## Release Packages
 
-Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, contribution and community documents, third-party notices, and the `third-party-licenses` directory, which includes the .NET runtime license and notices. No release has been published yet. To create one, confirm CI is green on `main`, then either run the **Release** workflow from the repository's Actions tab on `main` and enter a version such as `0.1.0-rc.1` (the workflow creates the tag on the tested commit), or tag and push, starting with a pre-release:
+Pushing a semantic-version tag such as `v0.1.0` or `v0.2.0-rc.1` on a commit in `main` builds and tests the solution, builds a self-contained Linux `.tar.gz` and Windows `.zip`, publishes matching `.sha256` files and build provenance attestations, and creates a GitHub release. Tags with a pre-release suffix create a pre-release. Each archive contains the executable, README, operations guide, license, contribution and community documents, third-party notices, and the `third-party-licenses` directory, which includes the .NET runtime license and notices. Published packages are on the [Releases page](https://github.com/Taylor8484/Replicera/releases). To create a new release, confirm CI is green on `main`, then either run the **Release** workflow from the repository's Actions tab on `main` and enter a version such as `0.1.0-rc.2` (the workflow creates the tag on the tested commit), or tag and push:
 
 ```sh
-git tag -a v0.1.0-rc.1 -m "Replicera 0.1.0 release candidate 1"
-git push origin v0.1.0-rc.1
+git tag -a v0.1.0-rc.2 -m "Replicera 0.1.0 release candidate 2"
+git push origin v0.1.0-rc.2
 ```
 
 Do not create the release from GitHub's release page; the workflow creates it after the packages are built and verified.
@@ -47,6 +49,8 @@ python3 scripts/package_release.py --version 0.1.0 --runtime win-x64
 ```
 
 Verify the adjacent `.sha256` file, and optionally the provenance with `gh attestation verify <archive> --repo Taylor8484/Replicera`, then extract the archive into a versioned directory, and invoke `replicera` (`replicera.exe` on Windows) from that directory. Upgrade by extracting the new version beside the old one, reusing the external configuration and environment variables, and switching the scheduled command after `replicera --version` succeeds.
+
+## Integration Tests
 
 Run the database integration suites with Docker:
 
@@ -61,6 +65,8 @@ scripts/run-end-to-end-tests.sh
 ```
 
 The database scripts start and remove temporary SQL Server 2022 (CU27), PostgreSQL 17.11, and Oracle AI Database Free 26ai (23.26.3) containers. The image versions are pinned so results are reproducible; update them deliberately and rerun the suites. To use an existing non-production server, set the corresponding `REPLICERA_SQL_TEST_CONNECTION_STRING`, `REPLICERA_POSTGRES_TEST_CONNECTION_STRING`, or `REPLICERA_ORACLE_TEST_CONNECTION_STRING`. Without these variables the database tests are reported as skipped; the scripts set `REPLICERA_INTEGRATION_REQUIRED=1`, which makes a missing connection fail the run instead. The lock-loss integration tests terminate the lock's database session, so the test login needs permission to end other sessions in its test database: `sa`-equivalent rights on SQL Server, `pg_signal_backend` or superuser on PostgreSQL, and `ALTER SYSTEM` plus `SELECT` on `V$SESSION` for the Oracle test user. The Oracle tests also need `CREATE TRIGGER` to simulate a failure after `CREATE TABLE`. `scripts/run-oracle-integration-tests.sh` grants all of these to its test user. Grant these only in disposable test environments. The scale script streams a logical 512 MiB dataset with a 256 MiB managed-heap limit and enforces a 5,000-record/s baseline. The Dataverse and end-to-end scripts load `.env.local` by default, or the file named by `REPLICERA_ENV_FILE`. The SQL Server and Oracle end-to-end scripts create and clean up a Dataverse account while verifying initial, update, and delete replication. Never use a production Dataverse environment.
+
+## Configuration
 
 Configuration files contain environment-variable names rather than secret values. Each destination can also set `commandTimeout` to limit how long a single database statement may run (ten minutes by default); see the operations guide. Client-secret authentication reads the secret directly from the configured variable. Certificate authentication reads a base64-encoded PKCS#12 document and, when needed, its password from a second environment variable.
 
@@ -91,6 +97,8 @@ replicera worker --job development
 The `--secret-env`, `--connection-env`, and `--certificate-password-env` arguments are environment-variable names, not values; names may contain only letters, digits, and underscores and must not start with a digit. A job must already exist in the configuration before using `tables add`.
 Use `source add --interactive`, `destination add --interactive`, or `job add --interactive` to prompt for omitted setup values. The prompts request secret-variable names, never secret contents.
 
+## Synchronization
+
 `inspect` reads Dataverse and destination metadata but does not enable change tracking or modify destination schema. `sync` performs those configured mutations.
 Jobs support three synchronization modes: `complete` (the default) mirrors source rows and columns, including deletions; `noDataLoss` adds and updates while timestamping retained source-deleted rows; and `reload` drops, recreates, and fully loads each table on every run. Newly detected columns are created nullable and trigger a full read so existing rows can be populated. Every table includes `data_load_dte`; `noDataLoss` tables also include `date_source_remove_dte`. Configure the JSON `sync.mode`, or pass `--mode complete|no-data-loss|reload` to `job add`.
 
@@ -100,11 +108,15 @@ Use `sync --full --table <name>` to force a full source read. In `complete` mode
 Use `--json` with `inspect`, `sync`, `status`, `schedule show`, or `source bootstrap-permissions` for machine-readable results. `sync --verbose` writes replication progress to standard error; `--log-json` on `sync` or `worker` writes the same diagnostics as JSON Lines for central logging.
 `status` reports each table's state, last successful sync, latest run type/time, row counts, and sanitized failure details. It only reads and never creates or upgrades Replicera's destination metadata.
 
+## Scheduling
+
 For portable automatic synchronization, configure an interval with `schedule set` and leave `replicera worker --job <job>` running. The worker runs one job at a time, waits for the configured interval after each completed attempt, and continues after failed attempts, backing off after consecutive failures. It reloads the configuration before every cycle. Press Ctrl+C, or send SIGTERM, for a graceful stop. The existing `sync` command remains available for manual runs whether the schedule is enabled or disabled. See the operations guide for the full worker lifecycle and limitations. Multi-job hosting, calendar schedules, containers, and native services are tracked in the [scheduling roadmap](docs/scheduling-roadmap.md).
+
+## Further Reading
 
 See `THIRD-PARTY-NOTICES.md` before distributing binaries.
 See [`docs/operations.md`](docs/operations.md) for privileges, deployment, recovery, resynchronization, and troubleshooting.
-Current platform support and limitations are listed in the [`v0.1 draft release notes`](docs/release-notes/v0.1-draft.md).
+Current platform support and limitations are listed in the [v0.1 release notes](docs/release-notes/v0.1-draft.md).
 
 ## Licensing and Contributions
 
@@ -114,4 +126,13 @@ The Community edition is intended to remain a complete, useful replication produ
 
 ## Status
 
-Replicera is under active v0.1 development and has no published release yet. Public commands and configuration formats may change until v0.1.
+Replicera v0.1 is feature-complete for its planned scope and in release-candidate testing; `v0.1.0-rc.1` is the current pre-release. SQL Server and Oracle have live Dataverse create, update, and delete evidence, and client-secret authentication has been validated against non-production Dataverse.
+
+Before the final v0.1.0 tag, the remaining live validation covers:
+
+- PostgreSQL's complete Dataverse source lifecycle (read-only account feeds are validated)
+- certificate authentication
+- naturally expired checkpoints and service-protection throttling
+- reader-role assignment for application users in a child business unit
+
+See the [known limitations](docs/release-notes/v0.1-draft.md#known-limitations) for details. Commands and configuration formats may still change between release candidates and are not guaranteed to be compatible until v0.1.0. Validate a release candidate against non-production environments before relying on it.
